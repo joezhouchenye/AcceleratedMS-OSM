@@ -1,0 +1,226 @@
+#include "msosm_gpu_batch.h"
+
+MSOSM_GPU_BATCH::MSOSM_GPU_BATCH(float bw, float dm, float f0) : Prepare_MSOSM(bw, dm, f0) {}
+
+MSOSM_GPU_BATCH::MSOSM_GPU_BATCH(float bw, float *dm, float f0, int numDMs) : Prepare_MSOSM(bw, dm, f0, numDMs) {}
+
+void MSOSM_GPU_BATCH::get_device_info()
+{
+    GPU_GetDevInfo();
+}
+
+void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch)
+{
+    if (verbose)
+    {
+        get_device_info();
+    }
+    calculate_min_order();
+    if (fftpoint != 0)
+    {
+        M = fftpoint / 2;
+        if (M < M_min)
+        {
+            cout << "Warning: The filter order is too small for the given FFT point. The minimum FFT point " << 2 * M_min << " is used." << endl;
+            M = M_min;
+        }
+    }
+    fftpoint = 2 * M;
+    this->fftpoint = fftpoint;
+    this->batch = batch;
+
+    // Allocate GPU memory for original 16-bit input
+    CUDA_CHECK(cudaMalloc((void **)&input_buffer_int16_d, batch * M * sizeof(uint16_pair)));
+
+    // Allocate GPU memory for converted complex input
+    input_buffer_size = (batch * D2D_REDUCE_COUNT + 1) * M;
+    CUDA_CHECK(cudaMalloc((void **)&input_buffer_d, input_buffer_size * sizeof(Complex)));
+    CUDA_CHECK(cudaMemset(input_buffer_d, 0, input_buffer_size * sizeof(Complex)));
+
+    input_fft_d = input_buffer_d;
+    input_fft_barrier = input_buffer_size - M;
+    input_fft_index = 0;
+    // Forward cuFTT plan
+    int n[1] = {fftpoint};             // 1D FFT Size
+    int inembed[] = {(batch + 1) * M}; // Input Size
+    int onembed[] = {fftpoint};        // Output Size
+    int istride = 1;                   // Input Stride
+    int ostride = 1;                   // Output Stride
+    int idist = M;                     // Input distance between consecutive FFT batches
+    int odist = fftpoint;              // Output distance between consecutive FFT batches
+    CUFFT_CHECK(cufftPlanMany(&p_f, 1, n, inembed, istride, idist, onembed, ostride, odist, CUFFT_C2C, batch));
+    CUFFT_CHECK(cufftSetStream(p_f, 0));
+    // Allocate GPU memory for FFT result buffer
+    // The required delay size is rounded up to the nearest multiple of batch size
+    fft_block_size = delaycount + batch - 1;
+    if (fft_block_size % batch != 0)
+    {
+        fft_block_size += batch - fft_block_size % batch;
+    }
+    if (verbose)
+    {
+        cout << "fft block size: " << fft_block_size << endl;
+    }
+    CUDA_CHECK(cudaMalloc((void **)&fft_block_d, fft_block_size * fftpoint * sizeof(Complex)));
+    output_fft_d = fft_block_d;
+    output_fft_barrier = fft_block_size * fftpoint;
+    output_fft_index = 0;
+
+    vector<vector<Segment>> segments(numDMs);
+    int total_segments = 0;
+    for (int i = 0; i < numDMs; i++)
+    {
+        segmentation(i);
+        segments[i] = build_segments(delay_points[i], fftpoint);
+        total_segments += segments[i].size();
+    }
+    // Allocate GPU memory for segments
+    CUDA_CHECK(cudaMalloc((void **)&segments_d, total_segments * sizeof(Segment)));
+    // Allocate GPU memory for delay block meta
+    CUDA_CHECK(cudaMalloc((void **)&delay_block_meta_d, numDMs * sizeof(DelayBlockMeta)));
+    vector<DelayBlockMeta> delay_block_meta(numDMs);
+    // Copy segments to GPU
+    int segment_offset = 0;
+    int segment_count = 0;
+    max_seg_count = 0;
+    for (int i = 0; i < numDMs; i++)
+    {
+        segment_count = segments[i].size();
+        CUDA_CHECK(cudaMemcpy(segments_d + segment_offset, segments[i].data(), segment_count * sizeof(Segment), cudaMemcpyHostToDevice));
+        delay_block_meta[i].seg_offset = segment_offset;
+        delay_block_meta[i].seg_count = segment_count;
+        if (segment_count > max_seg_count)
+        {
+            max_seg_count = segment_count;
+        }
+        segment_offset += segment_count;
+    }
+    // Copy delay block meta to GPU
+    CUDA_CHECK(cudaMemcpy(delay_block_meta_d, delay_block_meta.data(), numDMs * sizeof(DelayBlockMeta), cudaMemcpyHostToDevice));
+
+    // Allocate GPU memory for dedispersion parameters
+    CUDA_CHECK(cudaMalloc((void **)&dedisp_params_d, numDMs * fftpoint * sizeof(Complex)));
+    // Copy dedispersion parameters to GPU
+    for (int i = 0; i < numDMs; i++)
+    {
+        generate_dedisp_params(i);
+        CUDA_CHECK(cudaMemcpy(dedisp_params_d + i * fftpoint, dedisp_params[i], fftpoint * sizeof(Complex), cudaMemcpyHostToDevice));
+    }
+
+    // Allocate GPU memory for IFFT input
+    CUDA_CHECK(cudaMalloc((void **)&input_ifft_d, numDMs * batch * fftpoint * sizeof(Complex)));
+    // Inverse cuFTT plan
+    CUFFT_CHECK(cufftPlan1d(&p_b, fftpoint, CUFFT_C2C, numDMs * batch));
+    CUFFT_CHECK(cufftSetStream(p_b, 0));
+    // Allocate GPU memory for IFFT output
+    CUDA_CHECK(cudaMalloc((void **)&output_ifft_d, numDMs * batch * fftpoint * sizeof(Complex)));
+
+    // // Allocate GPU memory for final output after discarding samples
+    // CUDA_CHECK(cudaMalloc((void **)&output_buffer_d, numDMs * batch * M * sizeof(Complex)));
+    // Allocate GPU memory for final output in uint16 format
+    CUDA_CHECK(cudaMalloc((void **)&output_buffer_int16_d, numDMs * batch * M * sizeof(uint16_pair)));
+}
+
+void MSOSM_GPU_BATCH::increment_fft_input()
+{
+    if (input_fft_index >= input_fft_barrier)
+    {
+        input_fft_index -= input_fft_barrier;
+        CUDA_CHECK(cudaMemcpy(input_buffer_d, input_buffer_d + input_fft_barrier, M * sizeof(Complex), cudaMemcpyDeviceToDevice));
+    }
+    input_fft_d = input_buffer_d + input_fft_index;
+    input_fft_index += batch * M;
+}
+
+void MSOSM_GPU_BATCH::increment_fft_output()
+{
+    if (output_fft_index >= output_fft_barrier)
+    {
+        output_fft_index -= output_fft_barrier;
+    }
+    output_fft_d = fft_block_d + output_fft_index;
+    read_block_index = output_fft_index / fftpoint;
+    output_fft_index += batch * fftpoint;
+}
+
+void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
+{
+    // 拷贝新的count段输入数据到输入缓冲区
+    CUDA_CHECK(cudaMemcpy(input_buffer_int16_d, input, batch * M * sizeof(uint16_pair), cudaMemcpyHostToDevice));
+    // 确定FFT输入指针位置，并拷贝重合部分
+    increment_fft_input();
+    // 确定FFT输出指针位置
+    increment_fft_output();
+    // 转换为复数float
+    uint16ToComplex(input_fft_d + M, (uint16_t *)input_buffer_int16_d, batch * M);
+    // count个重合点数为M的FFT同时计算
+    CUFFT_CHECK(cufftExecC2C(p_f, input_fft_d, output_fft_d, CUFFT_FORWARD));
+    // 根据分段信息从FFT结果中提取需要的部分并乘以对应的dedispersion参数，得到IFFT输入
+    gatherMultiply(fft_block_d, dedisp_params_d, input_ifft_d,
+                          delay_block_meta_d, segments_d, max_seg_count,
+                          batch, numDMs, fftpoint, read_block_index, fft_block_size);
+    CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d, output_ifft_d, CUFFT_INVERSE));
+    // 每个IFFT结果都需要丢弃前M个采样点，这里使用核函数来并行处理
+    // discardSamples(output_ifft_d, output_buffer_d, M, batch * numDMs);
+    discardSamplesToUint16((uint16_t *)output_buffer_int16_d, output_ifft_d, M, batch * numDMs);
+}
+
+void MSOSM_GPU_BATCH::get_output(Complex *output)
+{
+    CUDA_CHECK(cudaMemcpy(output, output_buffer_d, numDMs * batch * M * sizeof(Complex), cudaMemcpyDeviceToHost));
+}
+
+void MSOSM_GPU_BATCH::get_output(uint16_pair *output)
+{
+    // complexToUint16((uint16_t *)output_buffer_int16_d, output_buffer_d, numDMs * batch * M);
+    CUDA_CHECK(cudaMemcpy(output, output_buffer_int16_d, numDMs * batch * M * sizeof(uint16_pair), cudaMemcpyDeviceToHost));
+}
+
+void MSOSM_GPU_BATCH::synchronize()
+{
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+void MSOSM_GPU_BATCH::reset_device()
+{
+    CUDA_CHECK(cudaDeviceReset());
+}
+
+MSOSM_GPU_BATCH::~MSOSM_GPU_BATCH()
+{
+    reset_device();
+}
+
+vector<Segment> MSOSM_GPU_BATCH::build_segments(const int* delay_block, int fft_len)
+{
+    vector<Segment> segments;
+    if (fft_len <= 0) return segments;
+
+    int cur_group = delay_block[0];
+    int cur_start = 0;
+
+    for (int k = 1; k < fft_len; ++k)
+    {
+        // 每个segment最大长度为BLOCK_SIZE，且同一segment内的延迟一致
+        // 最大长度对应GPU线程块大小，保证每个线程块处理一个segment时可以高效访问内存
+        if ((delay_block[k] != cur_group) || (k - cur_start == BLOCK_SIZE))
+        {
+            Segment seg;
+            seg.start = cur_start;
+            seg.len   = k - cur_start;
+            seg.group = cur_group;
+            segments.push_back(seg);
+
+            cur_start = k;
+            cur_group = delay_block[k];
+        }
+    }
+
+    Segment seg;
+    seg.start = cur_start;
+    seg.len   = fft_len - cur_start;
+    seg.group = cur_group;
+    segments.push_back(seg);
+
+    return segments;
+}
