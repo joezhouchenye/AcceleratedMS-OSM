@@ -104,8 +104,8 @@ void run_psrdada_GPU_batch(string filename, float dm, float period)
     f0 = f0 * 1e6;
     MSOSM_GPU_BATCH msosm_gpu1(bw, dm, f0);
     MSOSM_GPU_BATCH msosm_gpu2(bw, dm, f0);
-    msosm_gpu1.initialize_uint16(fftpoint, count);
-    msosm_gpu2.initialize_uint16(fftpoint, count);
+    msosm_gpu1.initialize_uint16(fftpoint, count, true);
+    msosm_gpu2.initialize_uint16(fftpoint, count, true);
     unsigned long M = msosm_gpu1.M;
     file.initBuffer(count * M);
     Fold_GPU fold(period, bw, count * M, file.outfileName, time_bin);

@@ -12,6 +12,7 @@ public:
     void initialize_uint16(unsigned long fftpoint = 0, int batch = 1, bool streaming = false);
     void filter_block_uint16(uint16_pair *input);
     void get_output(Complex *output);
+    Complex *get_output_pointer() { return output_buffer_d; }
     ~OSM_GPU_BATCH();
 
 private:
@@ -23,7 +24,6 @@ private:
 public:
     int batch;
     unsigned long total_memory = 0;
-    Complex *output_buffer_d;
 
 private:
     unsigned long fftpoint;
@@ -35,4 +35,5 @@ private:
     uint16_pair *output_buffer_int16_d;
     Complex *dedisp_params_d;
     cufftHandle p_f, p_b;
+    Complex *output_buffer_d;
 };

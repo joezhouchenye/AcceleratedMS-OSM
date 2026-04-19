@@ -18,23 +18,21 @@ public:
     MSOSM_GPU_BATCH(float bw = 0, float dm = 0, float f0 = 0);
     MSOSM_GPU_BATCH(float bw, float *dm, float f0, int numDMs = 1);
     void get_device_info();
-    void initialize_uint16(int fftpoint = 0, int batch = 1);
+    void initialize_uint16(int fftpoint = 0, int batch = 1, bool fold = false);
     void filter_block_uint16(uint16_pair *input);
-    void get_output(Complex *output);
     void get_output(uint16_pair *output);
+    void save_output(uint16_pair *output);
     void synchronize();
     void reset_device();
+    Complex *get_output_pointer() { return output_buffer_d; }
     ~MSOSM_GPU_BATCH();
 
 private:
-    bool reverse_flag = false;
-    int current_index = 0;
+    // Whether to fold the output data directly
+    bool fold = false;
 
-public:
+    // Batch size for processing
     int batch;
-    Complex *output_buffer_d;
-
-private:
     // GPU memory for original 16-bit input
     uint16_pair *input_buffer_int16_d;
     // GPU memory for converted complex input
@@ -83,7 +81,19 @@ private:
     // Pointer for IFFT output
     Complex *output_ifft_d;
 
+    // GPU memory for final output after discarding samples
+    Complex *output_buffer_d;
     uint16_pair *output_buffer_int16_d;
+
+private:
+    cudaStream_t fft_stream;
+    cudaStream_t dm_stream;
+    cudaStream_t output_stream;
+
+    cudaEvent_t fft_event;
+    cudaEvent_t dm_event;
+    cudaEvent_t ready_event;
+    cudaEvent_t output_event;
 
 private:
     vector<Segment> build_segments(const int* delay_block, int fft_len);

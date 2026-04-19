@@ -45,6 +45,7 @@ set(MY_INCLUDE_DIRS
   ${PROJECT_SOURCE_DIR}/gpu/include
   ${PROJECT_SOURCE_DIR}/dedispersion/include
   ${PROJECT_SOURCE_DIR}/simulated_pulsar/include
+  ${PROJECT_SOURCE_DIR}/data_save/include
 )
 
 set(MY_SOURCE_CPP_FILES
@@ -54,6 +55,7 @@ set(MY_SOURCE_CPP_FILES
   ${PROJECT_SOURCE_DIR}/dedispersion/msosm/*.cpp
   ${PROJECT_SOURCE_DIR}/dedispersion/overlap_save/*.cpp
   ${PROJECT_SOURCE_DIR}/simulated_pulsar/*.cpp
+  ${PROJECT_SOURCE_DIR}/data_save/*.cpp
 )
 
 set(MY_SOURCE_CU_FILES

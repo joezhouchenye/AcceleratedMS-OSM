@@ -36,8 +36,8 @@ template <typename T>
 void Fold_GPU::calculate_intensity(T *pol1, T *pol2)
 {
     // 计算2个极化方向的总强度
-    Complex *a = pol1->output_buffer_d;
-    Complex *b = pol2->output_buffer_d;
+    Complex *a = pol1->get_output_pointer();
+    Complex *b = pol2->get_output_pointer();
     calculateIntensity(a, b, total_intensity_d, size);
     cudaMemcpy(total_intensity, total_intensity_d, size * sizeof(float), cudaMemcpyDeviceToHost);
 }
