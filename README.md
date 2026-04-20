@@ -1,24 +1,18 @@
-# Multi-Segment Overlap-Save Method for Pulsar Coherent Dedispersion
+# Accelerated Multi-Segment Overlap-Save Method for Pulsar Coherent Dedispersion
 
-My test code for MS-OSM using various GPU implementations. The best GPU implementation still needs to be further evaluated.
+## Included Examples
 
-## Code Structure
+- `msosm_psrdata.cpp`: Example code to process a psrdada file using MS-OSM (folding directly)
+- `msosm_save_simulated.cpp`: Example code to generate a simulated pulsar signal, process it using MS-OSM, and save the dedispersed data of multiple DM trials to disk using io_uring
+- `benchmark/check_msosm.cpp`: Example code to verify the correctness of MS-OSM using a simulated signal
+- `benchmark/test_msosm_speed.cpp`: Example code to benchmark the speed of computing process of MS-OSM
 
-- `build.sh`: Script to build the code
-- `CMakeLists.txt`: CMake file to build the code
-- `dedispersion`:
-  - `msosm_stream`: Simple MS-OSM for a single DM with a stream
-  - `msosm_dm_loop`: MS-OSM for multiple DM trials using a loop
-  - `msosm_dm_stream`: MS-OSM for multiple DM trials using streams
-  - `msosm_dm_concurrent`: Concurrent execution for multiple DM trials using MS-OSM
-  - `overlap_save`: Simple Overlap-Save for a single DM
-  - `overlap_save_dm_concurrent`: Concurrent execution for multiple DM trials using Overlap-Save
-- `folding`: Folding process on GPU
-- `gpu`: GPU kernel functions
-- `psrdada`: PSRDADA file I/O
-- `simulated_pulsar`: Code to generate a simulated pulsar in time-domain
-- `utils`: Utility functions
-- `msosm_psrdata`: Example code to process a psrdada file using MS-OSM
-- `multiple_dm_*.cpp`: Example code for multiple DM trials using different approaches
-- `multiple_*.cpp`: Example code for a single DM
-- `test_*.cpp`: Test code for performance evaluation
+## Dependencies
+
+- CMake 3.25 or later
+- GCC 13 or later
+- Python 3.11 or later (for plotting results)
+  - `pybind11`, `matplotlib`, `numpy`, `mplcursors`
+- `libfftw3-dev`
+- `liburing-dev`
+- CUDA Toolkit 12.6 or later
