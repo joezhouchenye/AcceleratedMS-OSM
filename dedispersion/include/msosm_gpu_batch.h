@@ -21,13 +21,12 @@ public:
     void initialize_uint16(int fftpoint = 0, int batch = 1, bool fold = false);
     void filter_block_uint16(uint16_pair *input);
     void get_output(uint16_pair *output);
-    void save_output(uint16_pair *output);
     void synchronize();
     void reset_device();
     Complex *get_output_pointer() { return output_buffer_d; }
     ~MSOSM_GPU_BATCH();
 
-private:
+protected:
     // Whether to fold the output data directly
     bool fold = false;
 
@@ -85,7 +84,7 @@ private:
     Complex *output_buffer_d;
     uint16_pair *output_buffer_int16_d;
 
-private:
+protected:
     cudaStream_t fft_stream;
     cudaStream_t dm_stream;
     cudaStream_t output_stream;
@@ -95,6 +94,6 @@ private:
     cudaEvent_t ready_event;
     cudaEvent_t output_event;
 
-private:
+protected:
     vector<Segment> build_segments(const int* delay_block, int fft_len);
 };

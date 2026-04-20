@@ -136,8 +136,7 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
     else
     {
         // Allocate GPU memory for final output in uint16 format
-        CUDA_CHECK(cudaMalloc((void **)&output_buffer_int16_d, (numDMs * batch * M + 1) * sizeof(uint16_pair)));
-        CUDA_CHECK(cudaMemset(output_buffer_int16_d, 0, (numDMs * batch * M + 1) * sizeof(uint16_pair)));
+        CUDA_CHECK(cudaMalloc((void **)&output_buffer_int16_d, numDMs * batch * M * sizeof(uint16_pair)));
     }
 }
 
@@ -204,7 +203,7 @@ void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
         cudaEventRecord(dm_event, dm_stream);
         CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d, output_ifft_d, CUFFT_INVERSE));
         cudaStreamWaitEvent(dm_stream, output_event, 0);
-        discardSamplesToUint16((uint16_t *)output_buffer_int16_d, output_ifft_d, M, batch * numDMs);
+        discardSamplesToUint16((uint16_t *)output_buffer_int16_d, output_ifft_d, M, batch * numDMs, dm_stream);
         cudaEventRecord(ready_event, dm_stream);
     }
 }
@@ -212,14 +211,7 @@ void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
 void MSOSM_GPU_BATCH::get_output(uint16_pair *output)
 {
     cudaStreamWaitEvent(output_stream, ready_event, 0);
-    CUDA_CHECK(cudaMemcpyAsync(output, output_buffer_int16_d, (numDMs * batch * M + 1) * sizeof(uint16_pair), cudaMemcpyDeviceToHost, output_stream));
-    cudaEventRecord(output_event, output_stream);
-}
-
-void MSOSM_GPU_BATCH::save_output(uint16_pair *output)
-{
-    cudaStreamWaitEvent(output_stream, ready_event, 0);
-    CUDA_CHECK(cudaMemcpyAsync(output, output_buffer_int16_d, (numDMs * batch * M + 1) * sizeof(uint16_pair), cudaMemcpyDeviceToHost, output_stream));
+    CUDA_CHECK(cudaMemcpyAsync(output, output_buffer_int16_d, numDMs * batch * M * sizeof(uint16_pair), cudaMemcpyDeviceToHost, output_stream));
     cudaEventRecord(output_event, output_stream);
 }
 

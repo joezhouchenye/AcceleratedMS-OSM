@@ -72,6 +72,7 @@ file(GLOB CU_FILES ${MY_SOURCE_CU_FILES})
 set(EXECTABLES
   msosm_psrdada
   gpu_info
+  msosm_save_simulated
   # Add more executables here
 )
 
@@ -89,6 +90,10 @@ find_package(Python COMPONENTS Development NumPy)
 find_package(Python COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
 
+# liburing
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBURING REQUIRED liburing)
+
 foreach(EXE ${EXECTABLES})
 
   # target
@@ -103,8 +108,12 @@ foreach(EXE ${EXECTABLES})
   # FFTW
   target_link_libraries(${EXE} fftw3f)
 
-  #NVTXtest_processing_speed_msosm.cpp
+  # NVTX
   target_link_libraries(${EXE} CUDA::nvtx3)
+
+  # liburing
+  target_link_libraries(${EXE} ${LIBURING_LIBRARIES})
+  target_include_directories(${EXE} PRIVATE ${LIBURING_INCLUDE_DIRS})
 
 endforeach()
 
@@ -122,7 +131,11 @@ foreach(BENCH_EXE ${BENCHMARK_EXECUTABLES})
   # FFTW
   target_link_libraries(${BENCH_EXE} fftw3f)
 
-  #NVTXtest_processing_speed_msosm.cpp
+  # NVTX
   target_link_libraries(${BENCH_EXE} CUDA::nvtx3)
+
+  # liburing
+  target_link_libraries(${BENCH_EXE} ${LIBURING_LIBRARIES})
+  target_include_directories(${BENCH_EXE} PRIVATE ${LIBURING_INCLUDE_DIRS})
 
 endforeach()

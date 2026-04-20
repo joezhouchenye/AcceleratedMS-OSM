@@ -64,8 +64,6 @@ int main(int argc, char *argv[])
 
     MSOSM_GPU_BATCH *msosm;
     SimulatedComplexSignal *simulated_signal; // Generate simulated complex signal
-    // Use different parameters here to reduce generation time,
-    // since we only need to test the speed
     unsigned long signal_size = 0;
     uint16_pair *input;
 

@@ -39,7 +39,7 @@ public:
     int start_Nd;
     int end_Nd;
 
-private:
+protected:
     // Segment indexes for the negative and positive frequency components
     int *segneg, *segpos;
     // Segment delays for the negative and positive frequency components
