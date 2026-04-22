@@ -6,21 +6,34 @@ static void die(const string &msg)
     exit(1);
 }
 
-static string make_filename(const string &dir, const string &prefix, double value)
+static string make_filename(const string &dir, const string &prefix, double value, int precision)
 {
-    string value_str = to_string(value);
-    size_t dot_pos = value_str.find('.');
-    if (dot_pos != string::npos)
+    ostringstream oss;
+    oss << dir << "/" << prefix << "DM" << fixed << setprecision(precision) << value << ".dat";
+    cout << "Output file: " << oss.str() << endl;
+    return oss.str();
+}
+
+static int get_decimal_places_from_dm(float dm, int max_places = 10)
+{
+    dm = fabs(dm);
+    if (dm <= 0.0)
+        return 0;
+    int ret = max_places;
+    for (int places = 0; places <= max_places; ++places)
     {
-        // Keep 2 digits after the decimal point
-        value_str = value_str.substr(0, dot_pos + 3);
+        float scaled = dm * pow(10.0, places);
+        float rounded = std::round(scaled);
+        // 误差小于float精度
+        if (fabs(scaled - rounded) < 1e-6)
+        {
+            ret = places;
+            break;
+        }
     }
-    else
-    {
-        // If no decimal point, add .00
-        value_str += ".00";
-    }
-    return dir + "/" + prefix + "DM" + value_str + ".dat";
+    if (ret == 0)
+        ret = 2;
+    return ret;
 }
 
 MSOSM_DataSave_Uring::MSOSM_DataSave_Uring(float bw, float *dm, float f0, int numDMs) : MSOSM_GPU_BATCH(bw, dm, f0, numDMs) {}
@@ -42,9 +55,16 @@ void MSOSM_DataSave_Uring::config_save(string dir, string prefix)
         prefix += "_";
     }
     file_fds = new int[numDMs];
+    // 获取DM的最高精度
+    int dm_precision;
+    dm_precision = get_decimal_places_from_dm(dm_values[0], 10);
+    cout << dm_precision << endl;
+    if (numDMs > 1)
+        dm_precision = max(dm_precision, get_decimal_places_from_dm(dm_values[1], 10));
+    cout << dm_precision << endl;
     for (int i = 0; i < numDMs; i++)
     {
-        string filename = make_filename(dir, prefix, dm_values[i]);
+        string filename = make_filename(dir, prefix, dm_values[i], dm_precision);
         file_fds[i] = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (file_fds[i] < 0)
         {
@@ -133,14 +153,16 @@ void MSOSM_DataSave_Uring::poll_cuda_state()
 void MSOSM_DataSave_Uring::save_to_disk()
 {
     unsigned long saved_count = 0;
+    unsigned long submitted_count = 0;
     int save_index = 0;
 
     vector<int> slot_busy(slot_count, 0);
-    int inflight = 0;
+    int inflight_slots = 0;
 
     io_uring_cqe *cqe;
 
-    auto reap_completion = [&](io_uring_cqe *completed_cqe) {
+    auto reap_completion = [&](io_uring_cqe *completed_cqe)
+    {
         if (completed_cqe->res < 0)
         {
             die("I/O error: " + string(strerror(-completed_cqe->res)));
@@ -152,7 +174,7 @@ void MSOSM_DataSave_Uring::save_to_disk()
         {
             slot_states[completed_index].store(SaveSlotState::EMPTY, std::memory_order_release);
             saved_count++;
-            inflight--;
+            inflight_slots--;
         }
     };
 
@@ -160,34 +182,43 @@ void MSOSM_DataSave_Uring::save_to_disk()
     {
         bool progressed = false;
         SaveSlotState expected = SaveSlotState::READY;
-        if (slot_states[save_index].compare_exchange_strong(expected, SaveSlotState::SAVING, std::memory_order_acq_rel))
+        if (submitted_count < save_count)
         {
-            for (int i = 0; i < numDMs; i++)
+            if (slot_states[save_index].compare_exchange_strong(expected, SaveSlotState::SAVING, std::memory_order_acq_rel))
             {
-                auto sqe = io_uring_get_sqe(&ring);
-                if (sqe == nullptr)
+                const size_t base_offset =
+                    static_cast<size_t>(submitted_count) *
+                    static_cast<size_t>(data_offset) *
+                    sizeof(uint16_pair);
+
+                for (int i = 0; i < numDMs; i++)
                 {
-                    die("Failed to get submission queue entry");
+                    auto sqe = io_uring_get_sqe(&ring);
+                    if (sqe == nullptr)
+                    {
+                        die("Failed to get submission queue entry");
+                    }
+                    io_uring_prep_write(
+                        sqe,
+                        file_fds[i],
+                        slot_data_ptr[save_index] + i * data_offset,
+                        data_offset * sizeof(uint16_pair),
+                        base_offset);
+                    io_uring_sqe_set_data64(sqe, (uint64_t)save_index);
                 }
-                io_uring_prep_write(
-                    sqe,
-                    file_fds[i],
-                    slot_data_ptr[save_index] + i * data_offset,
-                    data_offset * sizeof(uint16_pair),
-                    saved_count * data_offset * sizeof(uint16_pair));
-                io_uring_sqe_set_data64(sqe, (uint64_t)save_index);
+                if (io_uring_submit(&ring) < 0)
+                {
+                    die("Failed to submit io_uring requests");
+                }
+                slot_busy[save_index] = numDMs;
+                inflight_slots++;
+                progressed = true;
+                save_index = (save_index + 1) % slot_count;
+                submitted_count++;
             }
-            if (io_uring_submit(&ring) < 0)
-            {
-                die("Failed to submit io_uring requests");
-            }
-            slot_busy[save_index] = numDMs;
-            inflight++;
-            progressed = true;
-            save_index = (save_index + 1) % slot_count;
         }
 
-        if (inflight > 0)
+        if (inflight_slots > 0)
         {
             int peek_result = io_uring_peek_cqe(&ring, &cqe);
             if (peek_result == 0)
@@ -203,7 +234,7 @@ void MSOSM_DataSave_Uring::save_to_disk()
 
         if (!progressed)
         {
-            if (inflight > 0)
+            if (inflight_slots > 0)
             {
                 if (io_uring_wait_cqe(&ring, &cqe) < 0)
                 {

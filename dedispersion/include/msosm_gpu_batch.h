@@ -5,7 +5,7 @@
 #include "psrdada.h"
 
 // Reduce the count of D2D memory copy
-constexpr int D2D_REDUCE_COUNT = 16;
+constexpr int D2D_REDUCE_COUNT = 1;
 
 // Ensure BLOCK_SIZE is smaller than MIN_SEGMENT_POINTS
 #if BLOCK_SIZE > MIN_SEGMENT_POINTS

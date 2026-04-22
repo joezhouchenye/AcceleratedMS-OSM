@@ -12,6 +12,7 @@ int main(int argc, char *argv[])
     float bw = 128e6;
     float dm = 75;
     float f0 = 1e9;
+    int numDMs = 8;
     unsigned long fftpoint = 0;
     // Compare proces length with OSM
     unsigned long osm_process_len = 268435456;
@@ -68,7 +69,12 @@ int main(int argc, char *argv[])
     uint16_pair *input;
 
     // msosm = new MSOSM_GPU_BATCH(bw, dm, f0);
-    msosm = new MSOSM_GPU_BATCH(bw, &dm, f0, 1);
+    float dm_values[numDMs];
+    for (int i = 0; i < numDMs; i++)
+    {
+        dm_values[i] = dm + i * 0.01;
+    }
+    msosm = new MSOSM_GPU_BATCH(bw, dm_values, f0, numDMs);
     msosm->initialize_uint16(fftpoint, batch);
     unsigned long M = msosm->M;
     unsigned long process_len = batch * M;
@@ -118,13 +124,13 @@ int main(int argc, char *argv[])
     cout << "Process Count: " << process_count << endl;
 
     uint16_pair *output;
-    output = (uint16_pair *)malloc((signal_size + process_count) * sizeof(uint16_pair));
+    output = (uint16_pair *)malloc( numDMs * signal_size * sizeof(uint16_pair));
     if (output == NULL)
     {
         cout << "Memory Allocation Failed" << endl;
         exit(1);
     }
-    error = cudaHostRegister(output, (signal_size + process_count) * sizeof(uint16_pair), cudaHostRegisterDefault);
+    error = cudaHostRegister(output, numDMs * signal_size * sizeof(uint16_pair), cudaHostRegisterDefault);
     if (error != cudaSuccess)
     {
         cout << "Host Memory Registration Failed" << endl;
@@ -140,9 +146,9 @@ int main(int argc, char *argv[])
     {
         current_input = input + k * process_len;
         msosm->filter_block_uint16(current_input);
-        msosm->get_output(output + k * (process_len + 1));
-        msosm->synchronize();
+        msosm->get_output(output + k * process_len * numDMs);
     }
+    msosm->synchronize();
 
     // Stop the timer
     auto stop = chrono::high_resolution_clock::now();
@@ -150,7 +156,7 @@ int main(int argc, char *argv[])
     double time = duration.count() / 1000000.0;
 
     plot_init();
-    plot_abs(output + (inputSize - 1) * block_size, block_size);
+    plot_abs(output + inputSize * block_size * numDMs - block_size * numDMs * 2, block_size * numDMs * 2);
     show();
 
     cudaHostUnregister(input);
