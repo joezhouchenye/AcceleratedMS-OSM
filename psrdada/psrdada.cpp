@@ -52,7 +52,13 @@ PSRDADA::PSRDADA(string filename)
             npol = stoi(parts.second);
         }
     }
-    cout << bw << " " << fc << " " << nbit << " " << nchan << " " << ndim << " " << npol << endl;
+    // cout << bw << " " << fc << " " << nbit << " " << nchan << " " << ndim << " " << npol << endl;
+    cout << "Bandwidth: " << bw << " MHz" << endl;
+    cout << "Center frequency: " << fc << " MHz" << endl;
+    cout << "Data precision: " << nbit << " bit" << endl;
+    cout << "Channel number: " << nchan << endl;
+    cout << "Dimension: " << ndim << endl;
+    cout << "Polarization number: " << npol << endl;
 }
 
 PSRDADA::~PSRDADA()

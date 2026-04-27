@@ -48,36 +48,6 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
     CUDA_CHECK(cudaMalloc((void **)&input_buffer_d, input_buffer_size * sizeof(Complex)));
     CUDA_CHECK(cudaMemset(input_buffer_d, 0, input_buffer_size * sizeof(Complex)));
 
-    input_fft_d = input_buffer_d;
-    input_fft_barrier = input_buffer_size - M;
-    input_fft_index = 0;
-    // Forward cuFTT plan
-    int n[1] = {fftpoint};             // 1D FFT Size
-    int inembed[] = {(batch + 1) * M}; // Input Size
-    int onembed[] = {fftpoint};        // Output Size
-    int istride = 1;                   // Input Stride
-    int ostride = 1;                   // Output Stride
-    int idist = M;                     // Input distance between consecutive FFT batches
-    int odist = fftpoint;              // Output distance between consecutive FFT batches
-    CUFFT_CHECK(cufftPlanMany(&p_f, 1, n, inembed, istride, idist, onembed, ostride, odist, CUFFT_C2C, batch));
-    if (!fold)
-        CUFFT_CHECK(cufftSetStream(p_f, fft_stream));
-    // Allocate GPU memory for FFT result buffer
-    // The required delay size is rounded up to the nearest multiple of batch size
-    fft_block_size = delaycount + batch - 1;
-    if (fft_block_size % batch != 0)
-    {
-        fft_block_size += batch - fft_block_size % batch;
-    }
-    if (verbose)
-    {
-        cout << "fft block size: " << fft_block_size << endl;
-    }
-    CUDA_CHECK(cudaMalloc((void **)&fft_block_d, fft_block_size * fftpoint * sizeof(Complex)));
-    output_fft_d = fft_block_d;
-    output_fft_barrier = fft_block_size * fftpoint;
-    output_fft_index = 0;
-
     vector<vector<Segment>> segments(numDMs);
     int total_segments = 0;
     for (int i = 0; i < numDMs; i++)
@@ -118,6 +88,37 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
         generate_dedisp_params(i);
         CUDA_CHECK(cudaMemcpy(dedisp_params_d + i * fftpoint, dedisp_params[i], fftpoint * sizeof(Complex), cudaMemcpyHostToDevice));
     }
+
+    input_fft_d = input_buffer_d;
+    input_fft_barrier = input_buffer_size - M;
+    input_fft_index = 0;
+    // Forward cuFTT plan
+    int n[1] = {fftpoint};             // 1D FFT Size
+    int inembed[] = {(batch + 1) * M}; // Input Size
+    int onembed[] = {fftpoint};        // Output Size
+    int istride = 1;                   // Input Stride
+    int ostride = 1;                   // Output Stride
+    int idist = M;                     // Input distance between consecutive FFT batches
+    int odist = fftpoint;              // Output distance between consecutive FFT batches
+    CUFFT_CHECK(cufftPlanMany(&p_f, 1, n, inembed, istride, idist, onembed, ostride, odist, CUFFT_C2C, batch));
+    if (!fold)
+        CUFFT_CHECK(cufftSetStream(p_f, fft_stream));
+    // Allocate GPU memory for FFT result buffer
+    // The required delay size is rounded up to the nearest multiple of batch size
+    // delaycount is initialized after segmentation(i), don't move this part before segmentation!!!
+    fft_block_size = delaycount + batch - 1;
+    if (fft_block_size % batch != 0)
+    {
+        fft_block_size += batch - fft_block_size % batch;
+    }
+    if (verbose)
+    {
+        cout << "fft block size: " << fft_block_size << endl;
+    }
+    CUDA_CHECK(cudaMalloc((void **)&fft_block_d, fft_block_size * fftpoint * sizeof(Complex)));
+    output_fft_d = fft_block_d;
+    output_fft_barrier = fft_block_size * fftpoint;
+    output_fft_index = 0;
 
     // Allocate GPU memory for IFFT input
     CUDA_CHECK(cudaMalloc((void **)&input_ifft_d, numDMs * batch * fftpoint * sizeof(Complex)));

@@ -7,11 +7,7 @@ using namespace std;
 
 void run_psrdada_GPU_batch(string filename, float dm, float period = 0);
 
-clock_t start_time, end_time;
 double gpu_duration;
-unsigned long filter_order_GPU, filter_order_CPU;
-
-unsigned long fft_point = 4194304;
 
 int main(int argc, char *argv[])
 {
@@ -91,8 +87,8 @@ int main(int argc, char *argv[])
 
 void run_psrdada_GPU_batch(string filename, float dm, float period)
 {
-    int count = 1;
-    unsigned long fftpoint = 2097152;
+    int count = 32;
+    unsigned long fftpoint = 0;
     unsigned long time_bin = 1024;
 
     PSRDADA file(filename);
@@ -111,6 +107,8 @@ void run_psrdada_GPU_batch(string filename, float dm, float period)
     Fold_GPU fold(period, bw, count * M, file.outfileName, time_bin);
     fold.discard_samples(msosm_gpu1.Nd_values[0]);
     bool first = true;
+    
+    auto start = chrono::high_resolution_clock::now();
     for (unsigned long i = 0; i < file.readCount; i++)
     {
         // 每10%显示一次
@@ -140,5 +138,7 @@ void run_psrdada_GPU_batch(string filename, float dm, float period)
     // plot(fold.fold_count, fold.period_samples);
     fold.fold_data_bins();
     fold.write_to_file();
+    auto stop = chrono::high_resolution_clock::now();
+    gpu_duration = chrono::duration_cast<chrono::milliseconds>(stop - start).count() / 1000.0;
     cout << "\rFinish" << endl;
 }
