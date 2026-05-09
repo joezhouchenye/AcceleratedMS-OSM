@@ -9,9 +9,9 @@ int main(int argc, char *argv[])
     verbose = false;
     int numDMs = 1;
     int batch = 32;
-    int startDM = -1;
-    int endDM = -1;
-    int DMstep = 1;
+    float startDM = -1;
+    float endDM = -1;
+    float DMstep = 1;
     int repeat = 10;
     // Pulsar signal parameters
     float bw = 128e6;
@@ -48,10 +48,10 @@ int main(int argc, char *argv[])
             numDMs = stoi(optarg);
             continue;
         case 's':
-            startDM = stoi(optarg);
+            startDM = stof(optarg);
             continue;
         case 'e':
-            DMstep = stoi(optarg);
+            DMstep = stof(optarg);
             continue;
         case 'w':
             bw = stof(optarg);
@@ -170,6 +170,9 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    uint16_pair *output;
+    cudaMallocHost(&output, numDMs * process_len * sizeof(uint16_pair));
+
     for (int i = 0; i < repeat; i++)
     {
         uint16_pair *current_input;
@@ -181,6 +184,7 @@ int main(int argc, char *argv[])
         {
             current_input = input + k * process_len;
             msosm->filter_block_uint16(current_input);
+            msosm->get_output(output);
         }
         msosm->synchronize();
 

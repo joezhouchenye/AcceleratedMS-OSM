@@ -143,6 +143,7 @@ int main(int argc, char *argv[])
     {
         current_input = input + k * process_len;
         msosm->filter_block_uint16(current_input);
+        msosm->copy_to_slot();
     }
 
     msosm->join_saving();

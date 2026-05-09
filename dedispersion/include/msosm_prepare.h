@@ -4,7 +4,7 @@
 
 using namespace std;
 
-constexpr int MIN_SEGMENT_POINTS = 256;
+constexpr int MIN_SEGMENT_POINTS = 1024;
 
 class Prepare_MSOSM
 {

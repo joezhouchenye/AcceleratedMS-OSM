@@ -2,6 +2,7 @@
 
 #include "gpu_common.cuh"
 
+constexpr int ITEMS_PER_THREAD = 4;
 constexpr int BLOCK_SIZE = 256;
 
 // Segment Struct

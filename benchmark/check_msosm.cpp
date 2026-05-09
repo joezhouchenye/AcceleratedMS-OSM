@@ -156,7 +156,7 @@ int main(int argc, char *argv[])
     double time = duration.count() / 1000000.0;
 
     plot_init();
-    plot_abs(output + inputSize * block_size * numDMs - block_size * numDMs * 2, block_size * numDMs * 2);
+    plot_abs(output + process_count * process_len * numDMs - process_len * numDMs, process_len * numDMs);
     show();
 
     cudaHostUnregister(input);

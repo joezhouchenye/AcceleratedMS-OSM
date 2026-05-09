@@ -8,9 +8,7 @@
 constexpr int D2D_REDUCE_COUNT = 1;
 
 // Ensure BLOCK_SIZE is smaller than MIN_SEGMENT_POINTS
-#if BLOCK_SIZE > MIN_SEGMENT_POINTS
-#error "BLOCK_SIZE should be smaller than MIN_SEGMENT_POINTS"
-#endif
+static_assert(BLOCK_SIZE <= MIN_SEGMENT_POINTS, "BLOCK_SIZE should be smaller than or equal to MIN_SEGMENT_POINTS");
 
 class MSOSM_GPU_BATCH : public Prepare_MSOSM
 {

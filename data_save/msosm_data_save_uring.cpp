@@ -10,7 +10,6 @@ static string make_filename(const string &dir, const string &prefix, double valu
 {
     ostringstream oss;
     oss << dir << "/" << prefix << "DM" << fixed << setprecision(precision) << value << ".dat";
-    cout << "Output file: " << oss.str() << endl;
     return oss.str();
 }
 
@@ -58,10 +57,8 @@ void MSOSM_DataSave_Uring::config_save(string dir, string prefix)
     // 获取DM的最高精度
     int dm_precision;
     dm_precision = get_decimal_places_from_dm(dm_values[0], 10);
-    cout << dm_precision << endl;
     if (numDMs > 1)
         dm_precision = max(dm_precision, get_decimal_places_from_dm(dm_values[1], 10));
-    cout << dm_precision << endl;
     for (int i = 0; i < numDMs; i++)
     {
         string filename = make_filename(dir, prefix, dm_values[i], dm_precision);
@@ -91,31 +88,28 @@ void MSOSM_DataSave_Uring::initialize_uring(int slot_count, unsigned long save_c
         slot_states[i] = SaveSlotState::EMPTY;
     }
 
-    if (io_uring_queue_init(slot_count * numDMs, &ring, 0) < 0)
+    rings = new io_uring[slot_count];
+    for (int i = 0; i < slot_count; i++)
     {
-        die("Failed to initialize io_uring queue");
+        if (io_uring_queue_init(numDMs * 32, &rings[i], 0) < 0)
+        {
+            die("Failed to initialize io_uring queue for slot " + to_string(i));
+        }
     }
+
+    save_threads = new thread[slot_count];
 }
 
 void MSOSM_DataSave_Uring::copy_to_slot()
 {
-    unsigned long copied_count = 0;
-    int copy_index = 0;
-    while (copied_count < save_count)
+    while (slot_states[copy_index].load(std::memory_order_acquire) != SaveSlotState::EMPTY)
     {
-        SaveSlotState expected = SaveSlotState::EMPTY;
-        if (slot_states[copy_index].compare_exchange_strong(expected, SaveSlotState::COPYING, std::memory_order_acq_rel))
-        {
-            get_output(slot_data_ptr[copy_index]);
-            cudaEventRecord(slot_events[copy_index], output_stream);
-            copied_count++;
-            copy_index = (copy_index + 1) % slot_count;
-        }
-        else
-        {
-            this_thread::yield();
-        }
+        _mm_pause();
     }
+    slot_states[copy_index].store(SaveSlotState::COPYING, std::memory_order_release);
+    get_output(slot_data_ptr[copy_index]);
+    cudaEventRecord(slot_events[copy_index], output_stream);
+    copy_index = (copy_index + 1) % slot_count;
 }
 
 void MSOSM_DataSave_Uring::poll_cuda_state()
@@ -145,21 +139,24 @@ void MSOSM_DataSave_Uring::poll_cuda_state()
         }
         if (!progressed)
         {
-            this_thread::yield();
+            _mm_pause();
         }
+    }
+    // The process finished. Notify the save thread to exit after saving the remaining data.
+    for (int i = 0; i < slot_count; i++)
+    {
+        while (slot_states[i].load(std::memory_order_acquire) != SaveSlotState::EMPTY)
+        {
+            _mm_pause();
+        }
+        slot_states[i].store(SaveSlotState::DONE, std::memory_order_release);
     }
 }
 
-void MSOSM_DataSave_Uring::save_to_disk()
+void MSOSM_DataSave_Uring::save_to_disk(int save_index)
 {
-    unsigned long saved_count = 0;
-    unsigned long submitted_count = 0;
-    int save_index = 0;
-
-    vector<int> slot_busy(slot_count, 0);
-    int inflight_slots = 0;
-
-    io_uring_cqe *cqe;
+    int slot_busy = 0;
+    size_t submitted_count = save_index;
 
     auto reap_completion = [&](io_uring_cqe *completed_cqe)
     {
@@ -167,109 +164,79 @@ void MSOSM_DataSave_Uring::save_to_disk()
         {
             die("I/O error: " + string(strerror(-completed_cqe->res)));
         }
-        int completed_index = io_uring_cqe_get_data64(completed_cqe);
-        slot_busy[completed_index]--;
-        io_uring_cqe_seen(&ring, completed_cqe);
-        if (slot_busy[completed_index] == 0)
+        slot_busy--;
+        io_uring_cqe_seen(rings + save_index, completed_cqe);
+        if (slot_busy == 0)
         {
-            slot_states[completed_index].store(SaveSlotState::EMPTY, std::memory_order_release);
-            saved_count++;
-            inflight_slots--;
+            slot_states[save_index].store(SaveSlotState::EMPTY, std::memory_order_release);
         }
     };
 
-    while (saved_count < save_count)
+    while (slot_states[save_index].load(std::memory_order_acquire) != SaveSlotState::DONE)
     {
-        bool progressed = false;
         SaveSlotState expected = SaveSlotState::READY;
-        if (submitted_count < save_count)
+        if (slot_states[save_index].compare_exchange_strong(expected, SaveSlotState::SAVING, std::memory_order_acq_rel))
         {
-            if (slot_states[save_index].compare_exchange_strong(expected, SaveSlotState::SAVING, std::memory_order_acq_rel))
-            {
-                const size_t base_offset =
-                    static_cast<size_t>(submitted_count) *
-                    static_cast<size_t>(data_offset) *
-                    sizeof(uint16_pair);
+            const size_t base_offset =
+                static_cast<size_t>(submitted_count) *
+                static_cast<size_t>(data_offset) *
+                sizeof(uint16_pair);
 
-                for (int i = 0; i < numDMs; i++)
+            for (int i = 0; i < numDMs; i++)
+            {
+                auto sqe = io_uring_get_sqe(rings + save_index);
+                if (sqe == nullptr)
                 {
-                    auto sqe = io_uring_get_sqe(&ring);
-                    if (sqe == nullptr)
-                    {
-                        die("Failed to get submission queue entry");
-                    }
-                    io_uring_prep_write(
-                        sqe,
-                        file_fds[i],
-                        slot_data_ptr[save_index] + i * data_offset,
-                        data_offset * sizeof(uint16_pair),
-                        base_offset);
-                    io_uring_sqe_set_data64(sqe, (uint64_t)save_index);
+                    die("Failed to get submission queue entry");
                 }
-                if (io_uring_submit(&ring) < 0)
-                {
-                    die("Failed to submit io_uring requests");
-                }
-                slot_busy[save_index] = numDMs;
-                inflight_slots++;
-                progressed = true;
-                save_index = (save_index + 1) % slot_count;
-                submitted_count++;
+                io_uring_prep_write(
+                    sqe,
+                    file_fds[i],
+                    slot_data_ptr[save_index] + i * data_offset,
+                    data_offset * sizeof(uint16_pair),
+                    base_offset);
             }
+            if (io_uring_submit(rings + save_index) < 0)
+            {
+                die("Failed to submit io_uring requests");
+            }
+            slot_busy = numDMs;
+            submitted_count += slot_count;
         }
 
-        if (inflight_slots > 0)
+        while (slot_busy > 0)
         {
-            int peek_result = io_uring_peek_cqe(&ring, &cqe);
-            if (peek_result == 0)
+            io_uring_cqe *cqe;
+            if (io_uring_wait_cqe(rings + save_index, &cqe) < 0)
             {
-                reap_completion(cqe);
-                progressed = true;
+                die("Failed while waiting for io_uring completion");
             }
-            else if (peek_result != -EAGAIN)
-            {
-                die("Failed to poll io_uring completion queue");
-            }
-        }
-
-        if (!progressed)
-        {
-            if (inflight_slots > 0)
-            {
-                if (io_uring_wait_cqe(&ring, &cqe) < 0)
-                {
-                    die("Failed while waiting for io_uring completion");
-                }
-                reap_completion(cqe);
-            }
-            else
-            {
-                this_thread::yield();
-            }
+            reap_completion(cqe);
         }
     }
 }
 
 void MSOSM_DataSave_Uring::start_saving()
 {
-    copy_thread = thread(&MSOSM_DataSave_Uring::copy_to_slot, this);
     poll_thread = thread(&MSOSM_DataSave_Uring::poll_cuda_state, this);
-    save_thread = thread(&MSOSM_DataSave_Uring::save_to_disk, this);
+    for (int i = 0; i < slot_count; i++)
+    {
+        save_threads[i] = thread(&MSOSM_DataSave_Uring::save_to_disk, this, i);
+    }
 }
 
 void MSOSM_DataSave_Uring::join_saving()
 {
-    if (copy_thread.joinable())
-    {
-        copy_thread.join();
-    }
     if (poll_thread.joinable())
     {
         poll_thread.join();
     }
-    if (save_thread.joinable())
+    for (int i = 0; i < slot_count; i++)
     {
-        save_thread.join();
+        if (save_threads[i].joinable())
+        {
+            save_threads[i].join();
+        }
     }
     this->synchronize();
     // Close file descriptors

@@ -37,52 +37,156 @@ void uint16ToComplex(Complex *dst, uint16_t *src, size_t size, cudaStream_t stre
     CUDA_CHECK(cudaGetLastError());
 }
 
+// static __global__ void gatherMultiply_kernel(
+//     const Complex *__restrict__ fft_block,
+//     const Complex *__restrict__ dedisp_params,
+//     Complex *ifft_input,
+//     const DelayBlockMeta *__restrict__ delay_block_meta,
+//     const Segment *__restrict__ segments,
+//     int batch, int numDMs, int fftpoint, int read_block_index, int fft_block_size)
+// {
+//     // FFT数据排布方式
+//     // 总大小为fft_block_size * fftpoint
+//     // ... front buffer
+//     // batch * fftpoint start from read_block_index
+//     // fft[0][batch1],fft[1][batch1],...,fft[fftpoint-1][batch1]
+//     // fft[0][batch2],fft[1][batch2],...,fft[fftpoint-1][batch2]
+//     // ...
+//     // fft[0][batchN],fft[1][batchN],...,fft[fftpoint-1][batchN]
+//     // ... back buffer
+//     const int dm_idx = blockIdx.x / batch;
+//     const int batch_idx = blockIdx.x % batch;
+//     const int seg_idx = blockIdx.y;
+//     const int thread_idx = threadIdx.x;
+
+//     if (dm_idx >= numDMs || batch_idx >= batch)
+//         return;
+
+//     DelayBlockMeta meta = delay_block_meta[dm_idx];
+//     if (seg_idx >= meta.seg_count)
+//         return;
+
+//     Segment seg = segments[meta.seg_offset + seg_idx];
+//     if (thread_idx >= seg.len)
+//         return;
+
+//     int delay_val = seg.group;
+//     int fft_idx = read_block_index + batch_idx - delay_val;
+//     fft_idx = ((fft_idx % fft_block_size) + fft_block_size) % fft_block_size;
+//     const int fft_offset = fft_idx * fftpoint;
+//     const int param_offset = dm_idx * fftpoint;
+//     const int out_offset = (dm_idx * batch + batch_idx) * fftpoint;
+
+//     int n_idx = seg.start + thread_idx;
+//     Complex inv_N = make_cuFloatComplex(1.0f / fftpoint, 0.0f);
+//     Complex fft_val = cuCmulf(fft_block[fft_offset + n_idx], inv_N);
+//     Complex param = dedisp_params[param_offset + n_idx];
+//     ifft_input[out_offset + n_idx] = cuCmulf(fft_val, param);
+// }
+
+// void gatherMultiply(
+//     const Complex *fft_block,
+//     const Complex *dedisp_params,
+//     Complex *ifft_input,
+//     const DelayBlockMeta *delay_block_meta,
+//     const Segment *segments,
+//     int &max_seg_count,
+//     int &batch, int &numDMs, int &fftpoint, int &read_block_index, int &fft_block_size,
+//     cudaStream_t stream)
+// {
+//     const int block_size = BLOCK_SIZE;
+//     dim3 grid(batch * numDMs, max_seg_count);
+//     gatherMultiply_kernel<<<grid, block_size, 0, stream>>>(
+//         fft_block, dedisp_params, ifft_input, delay_block_meta, segments,
+//         batch, numDMs, fftpoint, read_block_index, fft_block_size);
+//     CUDA_CHECK(cudaGetLastError());
+// }
+
+template <int ITEMS_PER_THREAD>
 static __global__ void gatherMultiply_kernel(
     const Complex *__restrict__ fft_block,
     const Complex *__restrict__ dedisp_params,
-    Complex *ifft_input,
+    Complex *__restrict__ ifft_input,
     const DelayBlockMeta *__restrict__ delay_block_meta,
     const Segment *__restrict__ segments,
-    int batch, int numDMs, int fftpoint, int read_block_index, int fft_block_size)
+    int batch,
+    int numDMs,
+    int fftpoint,
+    int read_block_index,
+    int fft_block_size)
 {
-    // FFT数据排布方式
-    // 总大小为fft_block_size * fftpoint
-    // ... front buffer
-    // batch * fftpoint start from read_block_index
-    // fft[0][batch1],fft[1][batch1],...,fft[fftpoint-1][batch1]
-    // fft[0][batch2],fft[1][batch2],...,fft[fftpoint-1][batch2]
-    // ...
-    // fft[0][batchN],fft[1][batchN],...,fft[fftpoint-1][batchN]
-    // ... back buffer
     const int dm_idx = blockIdx.x / batch;
     const int batch_idx = blockIdx.x % batch;
     const int seg_idx = blockIdx.y;
-    const int thread_idx = threadIdx.x;
+    const int tid = threadIdx.x;
 
     if (dm_idx >= numDMs || batch_idx >= batch)
         return;
 
-    DelayBlockMeta meta = delay_block_meta[dm_idx];
-    if (seg_idx >= meta.seg_count)
-        return;
+    __shared__ DelayBlockMeta meta;
+    __shared__ Segment seg;
+    if (threadIdx.x == 0)
+    {
+        meta = delay_block_meta[dm_idx];
+        seg = segments[meta.seg_offset + seg_idx];
+    }
+    __syncthreads();
 
-    Segment seg = segments[meta.seg_offset + seg_idx];
-    if (thread_idx >= seg.len)
-        return;
+    const int local_base = tid * ITEMS_PER_THREAD;
 
-    int delay_val = seg.group;
+    const int delay_val = seg.group;
+
     int fft_idx = read_block_index + batch_idx - delay_val;
     fft_idx = ((fft_idx % fft_block_size) + fft_block_size) % fft_block_size;
-    int fft_offset = fft_idx * fftpoint;
-    int param_offset = dm_idx * fftpoint;
-    int dm_offset = dm_idx * batch * fftpoint;
-    int batch_offset = batch_idx * fftpoint;
 
-    int n_idx = seg.start + thread_idx;
-    Complex inv_N = make_cuFloatComplex(1.0f / fftpoint, 0.0f);
-    Complex fft_val = cuCmulf(fft_block[fft_offset + n_idx], inv_N);
-    Complex param = dedisp_params[param_offset + n_idx];
-    ifft_input[dm_offset + batch_offset + n_idx] = cuCmulf(fft_val, param);
+    const int fft_offset = fft_idx * fftpoint;
+    const int param_offset = dm_idx * fftpoint;
+    const int out_offset = (dm_idx * batch + batch_idx) * fftpoint;
+
+    Complex fft_val[ITEMS_PER_THREAD];
+    Complex param[ITEMS_PER_THREAD];
+    bool valid[ITEMS_PER_THREAD];
+
+    const int n_idx0 = seg.start + local_base;
+
+    const float inv_N = 1.0f / static_cast<float>(fftpoint);
+
+#pragma unroll
+    for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+    {
+        const int local = local_base + j;
+        valid[j] = local < seg.len;
+    }
+
+#pragma unroll
+    for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+    {
+        if (valid[j])
+        {
+            const int n = n_idx0 + j;
+            fft_val[j] = fft_block[fft_offset + n];
+            param[j] = dedisp_params[param_offset + n];
+        }
+    }
+
+#pragma unroll
+    for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+    {
+        if (valid[j])
+        {
+            Complex v;
+            v.x = fft_val[j].x * inv_N;
+            v.y = fft_val[j].y * inv_N;
+
+            Complex p = param[j];
+
+            Complex y;
+            y.x = v.x * p.x - v.y * p.y;
+            y.y = v.x * p.y + v.y * p.x;
+
+            ifft_input[out_offset + n_idx0 + j] = y;
+        }
+    }
 }
 
 void gatherMultiply(
@@ -97,11 +201,124 @@ void gatherMultiply(
 {
     const int block_size = BLOCK_SIZE;
     dim3 grid(batch * numDMs, max_seg_count);
-    gatherMultiply_kernel<<<grid, block_size, 0, stream>>>(
+    gatherMultiply_kernel<ITEMS_PER_THREAD><<<grid, block_size, 0, stream>>>(
         fft_block, dedisp_params, ifft_input, delay_block_meta, segments,
         batch, numDMs, fftpoint, read_block_index, fft_block_size);
     CUDA_CHECK(cudaGetLastError());
 }
+
+// template <int ITEMS_PER_THREAD>
+// static __global__ void gatherMultiply_kernel(
+//     const Complex *__restrict__ fft_block,
+//     const Complex *__restrict__ dedisp_params,
+//     Complex *__restrict__ ifft_input,
+//     const DelayBlockMeta *__restrict__ delay_block_meta,
+//     const Segment *__restrict__ segments,
+//     int batch,
+//     int numDMs,
+//     int fftpoint,
+//     int read_block_index,
+//     int fft_block_size)
+// {
+//     const int dm_idx = blockIdx.x / batch;
+//     const int batch_idx = blockIdx.x % batch;
+//     const int tid = threadIdx.x;
+
+//     if (dm_idx >= numDMs || batch_idx >= batch)
+//         return;
+
+//     __shared__ DelayBlockMeta meta;
+//     __shared__ Segment segs[ITEMS_PER_THREAD];
+//     __shared__ int segs_len[ITEMS_PER_THREAD];
+//     __shared__ int segs_start[ITEMS_PER_THREAD];
+//     __shared__ int fft_offset[ITEMS_PER_THREAD];
+//     if (threadIdx.x == 0)
+//     {
+//         meta = delay_block_meta[dm_idx];
+//         for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+//         {
+//             const int seg_idx = blockIdx.y * ITEMS_PER_THREAD + j;
+//             segs[j] = (seg_idx < meta.seg_count) ? segments[meta.seg_offset + seg_idx] : Segment{0, 0, 0};
+//             const Segment seg = segs[j];
+//             segs_len[j] = seg.len;
+//             segs_start[j] = seg.start;
+//             if (seg.len > 0)
+//             {
+//                 int delay_val = seg.group;
+//                 int fft_idx = read_block_index + batch_idx - delay_val;
+//                 fft_idx = ((fft_idx % fft_block_size) + fft_block_size) % fft_block_size;
+//                 fft_offset[j] = fft_idx * fftpoint;
+//             } // else 不会被访问到，后续会通过 valid[j] 判断跳过访问 fft_offset[j]
+//         }
+//     }
+//     __syncthreads();
+
+//     const int param_offset = dm_idx * fftpoint;
+//     const int out_offset = (dm_idx * batch + batch_idx) * fftpoint;
+
+//     Complex fft_val[ITEMS_PER_THREAD];
+//     Complex param[ITEMS_PER_THREAD];
+//     int n_idx[ITEMS_PER_THREAD];
+//     bool valid[ITEMS_PER_THREAD];
+
+//     const float inv_N = 1.0f / static_cast<float>(fftpoint);
+
+// #pragma unroll
+//     for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+//     {
+//         valid[j] = tid < segs_len[j];
+//         n_idx[j] = segs_start[j] + tid;
+//     }
+
+// #pragma unroll
+//     for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+//     {
+//         if (valid[j])
+//         {
+//             const int n = n_idx[j];
+//             fft_val[j] = fft_block[fft_offset[j] + n];
+//             param[j] = dedisp_params[param_offset + n];
+//         }
+//     }
+
+// #pragma unroll
+//     for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+//     {
+//         if (valid[j])
+//         {
+//             Complex v;
+//             v.x = fft_val[j].x * inv_N;
+//             v.y = fft_val[j].y * inv_N;
+
+//             Complex p = param[j];
+
+//             Complex y;
+//             y.x = v.x * p.x - v.y * p.y;
+//             y.y = v.x * p.y + v.y * p.x;
+
+//             ifft_input[out_offset + n_idx[j]] = y;
+//         }
+//     }
+// }
+
+// void gatherMultiply(
+//     const Complex *fft_block,
+//     const Complex *dedisp_params,
+//     Complex *ifft_input,
+//     const DelayBlockMeta *delay_block_meta,
+//     const Segment *segments,
+//     int &max_seg_count,
+//     int &batch, int &numDMs, int &fftpoint, int &read_block_index, int &fft_block_size,
+//     cudaStream_t stream)
+// {
+//     constexpr int ITEMS_PER_THREAD = 4;
+//     const int block_size = 1024 / ITEMS_PER_THREAD;
+//     dim3 grid(batch * numDMs, (max_seg_count + ITEMS_PER_THREAD - 1) / ITEMS_PER_THREAD);
+//     gatherMultiply_kernel<ITEMS_PER_THREAD><<<grid, block_size, 0, stream>>>(
+//         fft_block, dedisp_params, ifft_input, delay_block_meta, segments,
+//         batch, numDMs, fftpoint, read_block_index, fft_block_size);
+//     CUDA_CHECK(cudaGetLastError());
+// }
 
 static __global__ void complexMultiply_kernel(Complex *a, Complex *b, Complex *block, int N, int batch)
 {
@@ -173,33 +390,34 @@ void complexToUint16(uint16_t *dst, Complex *src, size_t size, cudaStream_t stre
     CUDA_CHECK(cudaGetLastError());
 }
 
-static __global__ void discardSamplesToUint16_kernel(uint16_t *dst, Complex *src, int M, int count)
+static __global__ void discardSamplesToUint16_kernel(uint32_t *dst, Complex *src, int M)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    const int size = M * count;
-    if (i >= size)
-        return;
-
-    const int group = i / M;
-    const int offset = i % M;
-    const int index = group * 2 * M + offset + M;
+    const int offset = blockIdx.x * blockDim.x + threadIdx.x;
     const float scale = 1.0f / (2 * M);
+    const int group = blockIdx.y;
+    const int src_idx = group * 2 * M + M + offset;
+    const int dst_idx = group * M + offset;
 
-    float2 val = reinterpret_cast<float2 *>(src)[index];
-    val.x *= scale;
-    val.y *= scale;
+    Complex val = src[src_idx];
+    float x_f = val.x * scale;
+    float y_f = val.y * scale;
 
-    uint16_t x = static_cast<uint16_t>(val.x + 32768.0f * (val.x != 0));
-    uint16_t y = static_cast<uint16_t>(val.y + 32768.0f * (val.y != 0));
-    reinterpret_cast<uint32_t *>(dst)[i] = (static_cast<uint32_t>(y) << 16) | x;
+    uint32_t x = __float2uint_rn(x_f + (x_f != 0 ? 32768.0f : 0));
+    uint32_t y = __float2uint_rn(y_f + (y_f != 0 ? 32768.0f : 0));
+    dst[dst_idx] = (y << 16) | x;
 }
 
 void discardSamplesToUint16(uint16_t *dst, Complex *src, int M, int count, cudaStream_t stream)
 {
     const int block_size = BLOCK_SIZE;
-    const int size = M * count;
-    const int grid_size = (size + block_size - 1) / block_size;
-    discardSamplesToUint16_kernel<<<grid_size, block_size, 0, stream>>>(dst, src, M, count);
+    // Both M and BLOCK_SIZE are powers of 2
+    const int max_groups = 8;
+    dim3 grid(M / block_size, max_groups);
+    // This kernel has better performance with loop-based process than a fused single kernel.
+    for (int i = 0; i < count; i += max_groups)
+    {
+        discardSamplesToUint16_kernel<<<grid, block_size, 0, stream>>>(reinterpret_cast<uint32_t *>(dst) + i * M, src + i * 2 * M, M);
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 

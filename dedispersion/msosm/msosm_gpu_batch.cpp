@@ -89,6 +89,7 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
         CUDA_CHECK(cudaMemcpy(dedisp_params_d + i * fftpoint, dedisp_params[i], fftpoint * sizeof(Complex), cudaMemcpyHostToDevice));
     }
 
+    cout << "FFT point: " << fftpoint << endl;
     input_fft_d = input_buffer_d;
     input_fft_barrier = input_buffer_size - M;
     input_fft_index = 0;
@@ -123,7 +124,12 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
     // Allocate GPU memory for IFFT input
     CUDA_CHECK(cudaMalloc((void **)&input_ifft_d, numDMs * batch * fftpoint * sizeof(Complex)));
     // Inverse cuFTT plan
-    CUFFT_CHECK(cufftPlan1d(&p_b, fftpoint, CUFFT_C2C, numDMs * batch));
+    if (batch % ITEMS_PER_THREAD != 0)
+    {
+        cout << "Batch size must be a multiple of " << ITEMS_PER_THREAD << " for the current implementation." << endl;
+        exit(1);
+    }
+    CUFFT_CHECK(cufftPlan1d(&p_b, fftpoint, CUFFT_C2C, batch / ITEMS_PER_THREAD));
     if (!fold)
         CUFFT_CHECK(cufftSetStream(p_b, dm_stream));
     // Allocate GPU memory for IFFT output
@@ -191,20 +197,34 @@ void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
     else
     {
         cudaStreamWaitEvent(fft_stream, dm_event, 0);
+        PUSH_RANGE("H2D", 0);
         CUDA_CHECK(cudaMemcpyAsync(input_buffer_int16_d, input, batch * M * sizeof(uint16_pair), cudaMemcpyHostToDevice, fft_stream));
+        POP_RANGE;
         increment_fft_input();
         increment_fft_output();
+        PUSH_RANGE("Convert and FFT", 1);
         uint16ToComplex(input_fft_d + M, (uint16_t *)input_buffer_int16_d, batch * M, fft_stream);
         CUFFT_CHECK(cufftExecC2C(p_f, input_fft_d, output_fft_d, CUFFT_FORWARD));
+        POP_RANGE;
         cudaEventRecord(fft_event, fft_stream);
         cudaStreamWaitEvent(dm_stream, fft_event, 0);
+        PUSH_RANGE("Gather and Multiply", 2);
         gatherMultiply(fft_block_d, dedisp_params_d, input_ifft_d,
                        delay_block_meta_d, segments_d, max_seg_count,
                        batch, numDMs, fftpoint, read_block_index, fft_block_size, dm_stream);
+        POP_RANGE;
         cudaEventRecord(dm_event, dm_stream);
-        CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d, output_ifft_d, CUFFT_INVERSE));
+        PUSH_RANGE("IFFT", 3);
+        for (int i = 0; i < numDMs * ITEMS_PER_THREAD; i++)
+        {
+            CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d + i * batch / ITEMS_PER_THREAD * fftpoint, output_ifft_d + i * batch / ITEMS_PER_THREAD * fftpoint, CUFFT_INVERSE));
+        }
+        POP_RANGE;
+        // CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d, output_ifft_d, CUFFT_INVERSE));
         cudaStreamWaitEvent(dm_stream, output_event, 0);
+        PUSH_RANGE("Discard and Convert", 4);
         discardSamplesToUint16((uint16_t *)output_buffer_int16_d, output_ifft_d, M, batch * numDMs, dm_stream);
+        POP_RANGE;
         cudaEventRecord(ready_event, dm_stream);
     }
 }
@@ -212,7 +232,9 @@ void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
 void MSOSM_GPU_BATCH::get_output(uint16_pair *output)
 {
     cudaStreamWaitEvent(output_stream, ready_event, 0);
+    PUSH_RANGE("D2H", 5);
     CUDA_CHECK(cudaMemcpyAsync(output, output_buffer_int16_d, numDMs * batch * M * sizeof(uint16_pair), cudaMemcpyDeviceToHost, output_stream));
+    POP_RANGE;
     cudaEventRecord(output_event, output_stream);
 }
 

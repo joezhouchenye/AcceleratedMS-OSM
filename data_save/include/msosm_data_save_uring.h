@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string>
 #include <iomanip>
+#include <immintrin.h>
 
 using namespace std;
 
@@ -14,7 +15,8 @@ enum class SaveSlotState
     EMPTY,
     COPYING,
     READY,
-    SAVING
+    SAVING,
+    DONE
 };
 
 class MSOSM_DataSave_Uring : public MSOSM_GPU_BATCH
@@ -25,7 +27,7 @@ public:
     void initialize_uring(int slot_count, unsigned long save_count);
     void copy_to_slot();
     void poll_cuda_state();
-    void save_to_disk();
+    void save_to_disk(int save_index);
     void start_saving();
     void join_saving();
 
@@ -39,11 +41,12 @@ private:
     cudaEvent_t *slot_events;
     atomic<SaveSlotState> *slot_states;
 
-    thread copy_thread;
-    thread poll_thread;
-    thread save_thread;
+    int copy_index = 0;
+    thread *save_threads;
+    io_uring *rings;
 
-    io_uring ring;
+    thread poll_thread;
+
     int *file_fds;
     int data_offset;
 };
