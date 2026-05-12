@@ -28,6 +28,7 @@ public:
     void copy_to_slot();
     void poll_cuda_state();
     void save_to_disk(int save_index);
+    void save_to_disk_pwrite(int save_index);
     void start_saving();
     void join_saving();
 

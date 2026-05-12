@@ -106,9 +106,9 @@ void MSOSM_DataSave_Uring::copy_to_slot()
     {
         _mm_pause();
     }
-    slot_states[copy_index].store(SaveSlotState::COPYING, std::memory_order_release);
     get_output(slot_data_ptr[copy_index]);
     cudaEventRecord(slot_events[copy_index], output_stream);
+    slot_states[copy_index].store(SaveSlotState::COPYING, std::memory_order_release);
     copy_index = (copy_index + 1) % slot_count;
 }
 
@@ -177,6 +177,7 @@ void MSOSM_DataSave_Uring::save_to_disk(int save_index)
         SaveSlotState expected = SaveSlotState::READY;
         if (slot_states[save_index].compare_exchange_strong(expected, SaveSlotState::SAVING, std::memory_order_acq_rel))
         {
+            PUSH_RANGE("Save to Disk", 6);
             const size_t base_offset =
                 static_cast<size_t>(submitted_count) *
                 static_cast<size_t>(data_offset) *
@@ -212,6 +213,46 @@ void MSOSM_DataSave_Uring::save_to_disk(int save_index)
                 die("Failed while waiting for io_uring completion");
             }
             reap_completion(cqe);
+            if (slot_busy == 0)
+            {
+                POP_RANGE;
+            }
+        }
+    }
+}
+
+void MSOSM_DataSave_Uring::save_to_disk_pwrite(int save_index)
+{
+    size_t submitted_count = save_index;
+    while (slot_states[save_index].load(std::memory_order_acquire) != SaveSlotState::DONE)
+    {
+        if (slot_states[save_index].load(std::memory_order_acquire) == SaveSlotState::READY)
+        {
+            PUSH_RANGE("Save to Disk", 6);
+            const size_t base_offset =
+                static_cast<size_t>(submitted_count) *
+                static_cast<size_t>(data_offset) *
+                sizeof(uint16_pair);
+
+            for (int i = 0; i < numDMs; i++)
+            {
+                ssize_t written = pwrite(
+                    file_fds[i],
+                    slot_data_ptr[save_index] + i * data_offset,
+                    data_offset * sizeof(uint16_pair),
+                    base_offset);
+                if (written < 0)
+                {
+                    die("Failed to write to file: " + string(strerror(errno)));
+                }
+            }
+            slot_states[save_index].store(SaveSlotState::EMPTY, std::memory_order_release);
+            submitted_count += slot_count;
+            POP_RANGE;
+        }
+        else
+        {
+            _mm_pause();
         }
     }
 }

@@ -21,6 +21,9 @@ void MSOSM_GPU_BATCH::initialize_uint16(int fftpoint, int batch, bool fold)
         CUDA_CHECK(cudaEventCreate(&dm_event, cudaEventDisableTiming));
         CUDA_CHECK(cudaEventCreate(&ready_event, cudaEventDisableTiming));
         CUDA_CHECK(cudaEventCreate(&output_event, cudaEventDisableTiming));
+        nvtxNameCudaStream(fft_stream, "Input & FFT Stream");
+        nvtxNameCudaStream(dm_stream, "DM & IFFT Stream");
+        nvtxNameCudaStream(output_stream, "Output Stream");
     }
     if (verbose)
     {

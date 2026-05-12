@@ -9,6 +9,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/device_ptr.h>
 #include <nvtx3/nvToolsExt.h>
+#include <nvtx3/nvToolsExtCudaRt.h>
 #include <cuda.h>
 
 #include "globals.h"
