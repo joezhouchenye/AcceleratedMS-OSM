@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
     uint16_pair *input;
     input = simulated_signal->signal_u16;
     // Check and plot simulated signal
-    simulated_signal->plot_abs(input, block_size);
+    // simulated_signal->plot_abs(input, block_size);
 
     // Save simulated signal using DataSave_Uring
     MSOSM_DataSave_Uring *msosm;

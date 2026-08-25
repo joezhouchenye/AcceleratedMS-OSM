@@ -62,7 +62,7 @@ void MSOSM_DataSave_Uring::config_save(string dir, string prefix)
     for (int i = 0; i < numDMs; i++)
     {
         string filename = make_filename(dir, prefix, dm_values[i], dm_precision);
-        file_fds[i] = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        file_fds[i] = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0644);
         if (file_fds[i] < 0)
         {
             die("Failed to open file: " + filename);
