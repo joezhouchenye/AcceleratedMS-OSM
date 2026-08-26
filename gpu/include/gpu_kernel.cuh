@@ -35,6 +35,7 @@ void discardSamples(Complex *a, Complex *b, int M, int count, cudaStream_t strea
 void complexToUint16(uint16_t *dst, Complex *src, size_t size, cudaStream_t stream = 0);
 void discardSamplesToUint16(uint16_t *dst, Complex *src, int M, int count, cudaStream_t stream = 0);
 void calculateIntensity(Complex *a, Complex *b, float *total_intensity, unsigned long size, cudaStream_t stream = 0);
+void calculateIntensity(Complex *a, float *total_intensity, unsigned long size, cudaStream_t stream = 0);
 
 void initializeBoolArray(bool* array, int size, bool value);
 void waitForCPU(bool* flag, cudaStream_t stream);

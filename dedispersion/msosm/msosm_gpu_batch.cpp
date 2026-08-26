@@ -154,7 +154,7 @@ void MSOSM_GPU_BATCH::increment_fft_input()
 {
     if (input_fft_index >= input_fft_barrier)
     {
-        input_fft_index -= input_fft_barrier;
+        input_fft_index = 0;
         if (fold)
             CUDA_CHECK(cudaMemcpy(input_buffer_d, input_buffer_d + input_fft_barrier, M * sizeof(Complex), cudaMemcpyDeviceToDevice));
         else
@@ -168,7 +168,7 @@ void MSOSM_GPU_BATCH::increment_fft_output()
 {
     if (output_fft_index >= output_fft_barrier)
     {
-        output_fft_index -= output_fft_barrier;
+        output_fft_index = 0;
     }
     output_fft_d = fft_block_d + output_fft_index;
     read_block_index = output_fft_index / fftpoint;
@@ -193,7 +193,10 @@ void MSOSM_GPU_BATCH::filter_block_uint16(uint16_pair *input)
         gatherMultiply(fft_block_d, dedisp_params_d, input_ifft_d,
                        delay_block_meta_d, segments_d, max_seg_count,
                        batch, numDMs, fftpoint, read_block_index, fft_block_size);
-        CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d, output_ifft_d, CUFFT_INVERSE));
+        for (int i = 0; i < numDMs * ITEMS_PER_THREAD; i++)
+        {
+            CUFFT_CHECK(cufftExecC2C(p_b, input_ifft_d + i * batch / ITEMS_PER_THREAD * fftpoint, output_ifft_d + i * batch / ITEMS_PER_THREAD * fftpoint, CUFFT_INVERSE));
+        }
         // 每个IFFT结果都需要丢弃前M个采样点，这里使用核函数来并行处理
         discardSamples(output_ifft_d, output_buffer_d, M, batch * numDMs);
     }
