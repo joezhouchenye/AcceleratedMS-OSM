@@ -2,27 +2,27 @@ cmake_minimum_required(VERSION 3.25)
 
 set(CMAKE_BUILD_TYPE Release)
 
-# Enforce C++ compiler for CUDA 13.2
-# Check if /usr/bin/g++-15 exists
-execute_process(
-    COMMAND /usr/bin/g++-15 --version
-    RESULT_VARIABLE GPP_VERSION_CHECK_RESULT
-    OUTPUT_VARIABLE GPP_VERSION_OUTPUT
-    ERROR_QUIET
-)
+# # Enforce C++ compiler for CUDA 13.2
+# # Check if /usr/bin/g++-15 exists
+# execute_process(
+#     COMMAND /usr/bin/g++-15 --version
+#     RESULT_VARIABLE GPP_VERSION_CHECK_RESULT
+#     OUTPUT_VARIABLE GPP_VERSION_OUTPUT
+#     ERROR_QUIET
+# )
 
-# # If g++-15 exists, set CMAKE_CUDA_HOST_COMPILER
-if(GPP_VERSION_CHECK_RESULT EQUAL 0)
-    set(CMAKE_CUDA_HOST_COMPILER "/usr/bin/g++-15")
-else()
-    message(STATUS "g++-15 not found, not setting CMAKE_CUDA_HOST_COMPILER")
-endif()
+# # # If g++-15 exists, set CMAKE_CUDA_HOST_COMPILER
+# if(GPP_VERSION_CHECK_RESULT EQUAL 0)
+#     set(CMAKE_CUDA_HOST_COMPILER "/usr/bin/g++-15")
+# else()
+#     message(STATUS "g++-15 not found, not setting CMAKE_CUDA_HOST_COMPILER")
+# endif()
 
-if(GPP_VERSION_CHECK_RESULT EQUAL 0)
-    set(CMAKE_CXX_COMPILER "/usr/bin/g++-15")
-else()
-    message(STATUS "g++-15 not found, not setting CMAKE_CXX_COMPILER")
-endif()
+# if(GPP_VERSION_CHECK_RESULT EQUAL 0)
+#     set(CMAKE_CXX_COMPILER "/usr/bin/g++-15")
+# else()
+#     message(STATUS "g++-15 not found, not setting CMAKE_CXX_COMPILER")
+# endif()
 
 # Specify the maximum number of concurrent processes for building
 set(CMAKE_BUILD_PARALLEL_LEVEL 8)
