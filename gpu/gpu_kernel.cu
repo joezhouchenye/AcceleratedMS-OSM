@@ -429,11 +429,27 @@ __global__ void calculateIntensity_kernel(Complex *a, Complex *b, float *total_i
     total_intensity[i] = sqrtf(a[i].x * a[i].x + a[i].y * a[i].y + b[i].x * b[i].x + b[i].y * b[i].y);
 }
 
+__global__ void calculateIntensity_single_kernel(Complex *a, float *total_intensity, unsigned long size)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= size)
+        return;
+    total_intensity[i] = sqrtf(a[i].x * a[i].x + a[i].y * a[i].y);
+}
+
 void calculateIntensity(Complex *a, Complex *b, float *total_intensity, unsigned long size, cudaStream_t stream)
 {
     const int block_size = BLOCK_SIZE;
     const int grid_size = (size + block_size - 1) / block_size;
     calculateIntensity_kernel<<<grid_size, block_size, 0, stream>>>(a, b, total_intensity, size);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void calculateIntensity(Complex *a, float *total_intensity, unsigned long size, cudaStream_t stream)
+{
+    const int block_size = BLOCK_SIZE;
+    const int grid_size = (size + block_size - 1) / block_size;
+    calculateIntensity_single_kernel<<<grid_size, block_size, 0, stream>>>(a, total_intensity, size);
     CUDA_CHECK(cudaGetLastError());
 }
 

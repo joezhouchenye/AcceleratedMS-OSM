@@ -11,11 +11,12 @@ class Fold_GPU
 {
 public:
     Fold_GPU(float period, float fs, unsigned long size, string outfileName = "fold.txt", unsigned long time_bin = -1);
-    void discard_samples(unsigned long Nd);
     template <typename T>
     void calculate_intensity(T *pol1, T *pol2);
-    void fold_data();
-    void fold_data_bins();
+    template <typename T>
+    void calculate_intensity(T *pol1);
+    void fold_data_phase();
+    void get_folded_data();
     void write_to_file();
     ~Fold_GPU();
 
@@ -28,14 +29,17 @@ public:
     float *tmp_fold;
 
 private:
+    double t_start = 0.0;
     bool ready = false;
     int discard_count = 0;
     int current_discard = 0;
-    float *folded_data_raw;
     unsigned long size;
     float *total_intensity_d;
+    double sampling_frequency;
+    double period_seconds;
+    double *phase_bin_sum;
+    unsigned long long *phase_bin_count;
     float period_samples_float;
-    float diff_samples;
     float current_diff = 0.0f;
     unsigned long current_index = 0;
     ofstream outfile;

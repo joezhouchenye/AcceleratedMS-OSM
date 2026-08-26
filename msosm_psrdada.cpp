@@ -99,13 +99,17 @@ void run_psrdada_GPU_batch(string filename, float dm, float period)
     bw = bw * 1e6;
     f0 = f0 * 1e6;
     MSOSM_GPU_BATCH msosm_gpu1(bw, dm, f0);
-    MSOSM_GPU_BATCH msosm_gpu2(bw, dm, f0);
+    MSOSM_GPU_BATCH* msosm_gpu2 = nullptr;
+    if (file.npol == 2)
+    {
+        msosm_gpu2 = new MSOSM_GPU_BATCH(bw, dm, f0);
+    }
     msosm_gpu1.initialize_uint16(fftpoint, count, true);
-    msosm_gpu2.initialize_uint16(fftpoint, count, true);
+    if (msosm_gpu2)
+        msosm_gpu2->initialize_uint16(fftpoint, count, true);
     unsigned long M = msosm_gpu1.M;
     file.initBuffer(count * M);
     Fold_GPU fold(period, bw, count * M, file.outfileName, time_bin);
-    fold.discard_samples(msosm_gpu1.Nd_values[0]);
     bool first = true;
     
     auto start = chrono::high_resolution_clock::now();
@@ -130,13 +134,18 @@ void run_psrdada_GPU_batch(string filename, float dm, float period)
         }
         // plot_pol1(file.pol1_in, count * M);
         msosm_gpu1.filter_block_uint16(file.pol1_in);
-        msosm_gpu2.filter_block_uint16(file.pol2_in);
-        fold.calculate_intensity<MSOSM_GPU_BATCH>(&msosm_gpu1, &msosm_gpu2);
-        // plot(fold.total_intensity, count * M);
-        fold.fold_data();
+        if (file.npol == 2)
+        {
+            msosm_gpu2->filter_block_uint16(file.pol2_in);
+            fold.calculate_intensity<MSOSM_GPU_BATCH>(&msosm_gpu1, msosm_gpu2);
+        }
+        else
+        {
+            fold.calculate_intensity<MSOSM_GPU_BATCH>(&msosm_gpu1);
+        }
+        fold.fold_data_phase();
     }
-    // plot(fold.fold_count, fold.period_samples);
-    fold.fold_data_bins();
+    fold.get_folded_data();
     fold.write_to_file();
     auto stop = chrono::high_resolution_clock::now();
     gpu_duration = chrono::duration_cast<chrono::milliseconds>(stop - start).count() / 1000.0;

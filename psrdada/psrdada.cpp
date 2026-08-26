@@ -73,6 +73,11 @@ void PSRDADA::initBuffer(size_t n)
         cout << "n must be a multiple of frameSamples (2048)" << endl;
         exit(1);
     }
+    if (npol != 1 && npol != 2)
+    {
+        cout << "Unsupported polarization number: " << npol << endl;
+        exit(1);
+    }
     pol1_in = new uint16_pair[n];
     pol2_in = new uint16_pair[n];
     frameCount = n / frameSamples;
@@ -82,7 +87,7 @@ void PSRDADA::initBuffer(size_t n)
         cout << "frameCount: " << frameCount << endl;
         cout << "Filesize: " << filesize << " bytes" << endl;
     }
-    readCount = static_cast<unsigned long>((filesize - blockSize) / (2 * n * sizeof(uint16_pair)));
+    readCount = static_cast<unsigned long>((filesize - blockSize) / (npol * n * sizeof(uint16_pair)));
     if (verbose)
     {
         cout << "readCount: " << readCount << endl;
@@ -95,7 +100,10 @@ void PSRDADA::readSamples()
     for (int i = 0; i < frameCount; i++)
     {
         infile.read((char *)pol1_in + i * frameSamples * sizeof(uint16_pair), frameSamples * sizeof(uint16_pair));
-        infile.read((char *)pol2_in + i * frameSamples * sizeof(uint16_pair), frameSamples * sizeof(uint16_pair));
+        if (npol == 2)
+        {
+            infile.read((char *)pol2_in + i * frameSamples * sizeof(uint16_pair), frameSamples * sizeof(uint16_pair));
+        }
     }
 }
 
