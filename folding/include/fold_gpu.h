@@ -23,10 +23,7 @@ public:
 public:
     float *folded_data;
     unsigned long time_bin;
-    float *total_intensity;
     unsigned long period_samples;
-    unsigned long *fold_count;
-    float *tmp_fold;
 
 private:
     double t_start = 0.0;
@@ -37,8 +34,9 @@ private:
     float *total_intensity_d;
     double sampling_frequency;
     double period_seconds;
-    double *phase_bin_sum;
-    unsigned long long *phase_bin_count;
+    double *phase_bin_sum_d;
+    unsigned long long *phase_bin_count_d;
+    float *folded_data_d;
     float period_samples_float;
     float current_diff = 0.0f;
     unsigned long current_index = 0;

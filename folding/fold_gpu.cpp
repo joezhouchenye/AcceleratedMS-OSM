@@ -14,12 +14,14 @@ Fold_GPU::Fold_GPU(float period, float fs, unsigned long size, string outfileNam
         time_bin = period_samples;
     }
     this->time_bin = time_bin;
-    total_intensity = new float[size]();
     folded_data = new float[time_bin]();
-    phase_bin_sum = new double[time_bin]();
-    phase_bin_count = new unsigned long long[time_bin]();
     outfile.open(outfileName);
     cudaMalloc((void **)&total_intensity_d, size * sizeof(float));
+    cudaMalloc((void **)&phase_bin_sum_d, time_bin * sizeof(double));
+    cudaMalloc((void **)&phase_bin_count_d, time_bin * sizeof(unsigned long long));
+    cudaMalloc((void **)&folded_data_d, time_bin * sizeof(float));
+    cudaMemset(phase_bin_sum_d, 0, time_bin * sizeof(double));
+    cudaMemset(phase_bin_count_d, 0, time_bin * sizeof(unsigned long long));
 }
 
 template <typename T>
@@ -29,7 +31,6 @@ void Fold_GPU::calculate_intensity(T *pol1, T *pol2)
     Complex *a = pol1->get_output_pointer();
     Complex *b = pol2->get_output_pointer();
     calculateIntensity(a, b, total_intensity_d, size);
-    cudaMemcpy(total_intensity, total_intensity_d, size * sizeof(float), cudaMemcpyDeviceToHost);
 }
 
 template <typename T>
@@ -37,7 +38,6 @@ void Fold_GPU::calculate_intensity(T *pol1)
 {
     Complex *a = pol1->get_output_pointer();
     calculateIntensity(a, total_intensity_d, size);
-    cudaMemcpy(total_intensity, total_intensity_d, size * sizeof(float), cudaMemcpyDeviceToHost);
 }
 
 template void Fold_GPU::calculate_intensity<MSOSM_GPU_BATCH>(MSOSM_GPU_BATCH*, MSOSM_GPU_BATCH*);
@@ -48,46 +48,15 @@ template void Fold_GPU::calculate_intensity<OSM_GPU_BATCH>(OSM_GPU_BATCH*);
 void Fold_GPU::fold_data_phase()
 {
     const double dt = 1.0 / sampling_frequency;
-
-    for (unsigned long i = 0; i < size; i++)
-    {
-        double t = t_start + static_cast<double>(i) * dt;
-
-        double phase = fmod(t / period_seconds, 1.0);
-
-        unsigned long bin =
-            static_cast<unsigned long>(floor(phase * time_bin));
-
-        if (bin >= time_bin)
-            bin = time_bin - 1;
-
-        if (total_intensity[i] == 0)
-            continue;
-        phase_bin_sum[bin] += total_intensity[i];
-        phase_bin_count[bin]++;
-    }
-
+    foldDataPhase(total_intensity_d, phase_bin_sum_d, phase_bin_count_d,
+                  size, time_bin, t_start, dt, period_seconds);
     t_start += static_cast<double>(size) * dt;
 }
 
-
 void Fold_GPU::get_folded_data()
 {
-    for (unsigned long bin = 0; bin < time_bin; bin++)
-    {
-        if (phase_bin_count[bin] > 0)
-        {
-            folded_data[bin] =
-                static_cast<float>(
-                    phase_bin_sum[bin] /
-                    phase_bin_count[bin]
-                );
-        }
-        else
-        {
-            folded_data[bin] = 0.0f;
-        }
-    }
+    computeFoldedData(phase_bin_sum_d, phase_bin_count_d, folded_data_d, time_bin);
+    cudaMemcpy(folded_data, folded_data_d, time_bin * sizeof(float), cudaMemcpyDeviceToHost);
 }
 
 void Fold_GPU::write_to_file()
@@ -101,6 +70,8 @@ void Fold_GPU::write_to_file()
 Fold_GPU::~Fold_GPU()
 {
     outfile.close();
-    delete[] phase_bin_sum;
-    delete[] phase_bin_count;
+    cudaFree(total_intensity_d);
+    cudaFree(phase_bin_sum_d);
+    cudaFree(phase_bin_count_d);
+    cudaFree(folded_data_d);
 }

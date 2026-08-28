@@ -453,6 +453,64 @@ void calculateIntensity(Complex *a, float *total_intensity, unsigned long size, 
     CUDA_CHECK(cudaGetLastError());
 }
 
+__global__ void foldDataPhase_kernel(
+    const float *__restrict__ total_intensity,
+    double *phase_bin_sum,
+    unsigned long long *phase_bin_count,
+    unsigned long size, unsigned long time_bin,
+    double t_start, double dt, double period_seconds)
+{
+    unsigned long i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= size)
+        return;
+
+    float val = total_intensity[i];
+    if (val == 0.0f)
+        return;
+
+    double t = t_start + static_cast<double>(i) * dt;
+    double phase = fmod(t / period_seconds, 1.0);
+    unsigned long bin = static_cast<unsigned long>(floor(phase * time_bin));
+    if (bin >= time_bin)
+        bin = time_bin - 1;
+
+    atomicAdd(&phase_bin_sum[bin], static_cast<double>(val));
+    atomicAdd(&phase_bin_count[bin], 1ULL);
+}
+
+void foldDataPhase(const float *total_intensity, double *phase_bin_sum, unsigned long long *phase_bin_count,
+                    unsigned long size, unsigned long time_bin,
+                    double t_start, double dt, double period_seconds, cudaStream_t stream)
+{
+    const int block_size = BLOCK_SIZE;
+    const int grid_size = (size + block_size - 1) / block_size;
+    foldDataPhase_kernel<<<grid_size, block_size, 0, stream>>>(
+        total_intensity, phase_bin_sum, phase_bin_count, size, time_bin, t_start, dt, period_seconds);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void computeFoldedData_kernel(
+    const double *__restrict__ phase_bin_sum,
+    const unsigned long long *__restrict__ phase_bin_count,
+    float *folded_data, unsigned long time_bin)
+{
+    unsigned long bin = blockIdx.x * blockDim.x + threadIdx.x;
+    if (bin >= time_bin)
+        return;
+    unsigned long long cnt = phase_bin_count[bin];
+    folded_data[bin] = (cnt > 0) ? static_cast<float>(phase_bin_sum[bin] / cnt) : 0.0f;
+}
+
+void computeFoldedData(const double *phase_bin_sum, const unsigned long long *phase_bin_count,
+                        float *folded_data, unsigned long time_bin, cudaStream_t stream)
+{
+    const int block_size = BLOCK_SIZE;
+    const int grid_size = (time_bin + block_size - 1) / block_size;
+    computeFoldedData_kernel<<<grid_size, block_size, 0, stream>>>(
+        phase_bin_sum, phase_bin_count, folded_data, time_bin);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 __global__ void initializeBoolArray_kernel(bool *array, int size, bool value)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;

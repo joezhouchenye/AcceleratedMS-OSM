@@ -37,6 +37,12 @@ void discardSamplesToUint16(uint16_t *dst, Complex *src, int M, int count, cudaS
 void calculateIntensity(Complex *a, Complex *b, float *total_intensity, unsigned long size, cudaStream_t stream = 0);
 void calculateIntensity(Complex *a, float *total_intensity, unsigned long size, cudaStream_t stream = 0);
 
+void foldDataPhase(const float *total_intensity, double *phase_bin_sum, unsigned long long *phase_bin_count,
+                    unsigned long size, unsigned long time_bin,
+                    double t_start, double dt, double period_seconds, cudaStream_t stream = 0);
+void computeFoldedData(const double *phase_bin_sum, const unsigned long long *phase_bin_count,
+                        float *folded_data, unsigned long time_bin, cudaStream_t stream = 0);
+
 void initializeBoolArray(bool* array, int size, bool value);
 void waitForCPU(bool* flag, cudaStream_t stream);
 void unblockCPU(bool* flag, cudaStream_t stream);
