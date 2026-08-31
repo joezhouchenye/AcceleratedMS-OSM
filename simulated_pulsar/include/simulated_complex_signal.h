@@ -8,6 +8,7 @@ class SimulatedComplexSignal
 {
 public:
     SimulatedComplexSignal(float bw, float dm, float f0, float period, string mode="complex");
+    void generate_pulsar_signal_new(unsigned long repeat = 1, bool add_noise = false, float SNR = 0, bool pinned = true);
     void generate_pulsar_signal(unsigned long repeat = 1, bool add_noise = false, float SNR = 0, bool pinned = true);
     void plot_abs(const fftwf_complex *signal, unsigned long size);
     void plot_abs(const uint16_pair *signal, unsigned long size);

@@ -80,6 +80,7 @@ set(EXECTABLES
 set(BENCHMARK_EXECUTABLES
   test_msosm_speed
   check_msosm
+  check_osm
   # Add more benchmark executables here
 )
 

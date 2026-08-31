@@ -12,7 +12,7 @@ int main(int argc, char *argv[])
     float bw = 128e6;
     float dm = 75;
     float f0 = 1e9;
-    int numDMs = 8;
+    int numDMs = 1;
     unsigned long fftpoint = 0;
     // Compare proces length with OSM
     unsigned long osm_process_len = 268435456;
@@ -104,7 +104,7 @@ int main(int argc, char *argv[])
             inputSize = 1;
     }
     simulated_signal = new SimulatedComplexSignal(bw, dm, f0, period, "uint16");
-    simulated_signal->generate_pulsar_signal(inputSize, false, 0, false);
+    simulated_signal->generate_pulsar_signal_new(inputSize, false, 0, false);
     signal_size = simulated_signal->signal_size;
     cout << "Signal Size: " << signal_size << endl;
     input = simulated_signal->signal_u16;
@@ -156,10 +156,37 @@ int main(int argc, char *argv[])
     double time = duration.count() / 1000000.0;
 
     plot_init();
-    plot_abs(output + process_count * process_len * numDMs - process_len * numDMs, process_len * numDMs);
-    show();
+    if (numDMs == 1)
+    {
+        uint16_pair *plot_output = output + process_count * process_len - process_len;
+        plot_abs(plot_output, block_size);
+        show();
+        ofstream abs_output("check_msosm_abs.txt");
+        for (unsigned long i = 0; i < block_size; i++)
+        {
+            float real = (plot_output[i].first == 0) ? 0.0f : static_cast<float>(plot_output[i].first) - 32768.0f;
+            float imag = (plot_output[i].second == 0) ? 0.0f : static_cast<float>(plot_output[i].second) - 32768.0f;
+            abs_output << sqrt(real * real + imag * imag) << '\n';
+        }
+        abs_output.close();
+        ofstream test_output("test.txt");
+        for (unsigned long i = 0; i < block_size; i++)
+        {
+            float real = simulated_signal->signal[i][0];
+            float imag = simulated_signal->signal[i][1];
+            test_output << sqrt(real * real + imag * imag) << '\n';
+        }
+        test_output.close();
+    }
+    else
+    {
+        plot_abs(output + process_count * process_len * numDMs - process_len * numDMs, process_len * numDMs);
+        show();
+    }
 
     cudaHostUnregister(input);
+    cudaHostUnregister(output);
+    free(output);
     msosm->reset_device();
 
     cout << "Time taken (ms):" << time << endl;

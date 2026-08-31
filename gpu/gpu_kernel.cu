@@ -149,7 +149,7 @@ static __global__ void gatherMultiply_kernel(
 
     const int n_idx0 = seg.start + local_base;
 
-    const float inv_N = 1.0f / static_cast<float>(fftpoint);
+    // const float inv_N = 1.0f / static_cast<float>(fftpoint);
 
 #pragma unroll
     for (int j = 0; j < ITEMS_PER_THREAD; ++j)
@@ -175,8 +175,8 @@ static __global__ void gatherMultiply_kernel(
         if (valid[j])
         {
             Complex v;
-            v.x = fft_val[j].x * inv_N;
-            v.y = fft_val[j].y * inv_N;
+            v.x = fft_val[j].x;
+            v.y = fft_val[j].y;
 
             Complex p = param[j];
 
@@ -326,8 +326,8 @@ static __global__ void complexMultiply_kernel(Complex *a, Complex *b, Complex *b
     if (i >= N * batch)
         return;
     float2 input1, input2;
-    input1.x = a[i].x / N;
-    input1.y = a[i].y / N;
+    input1.x = a[i].x;
+    input1.y = a[i].y;
     input2.x = b[i % N].x;
     input2.y = b[i % N].y;
     block[i] = cuCmulf(input1, input2);
@@ -437,7 +437,7 @@ __global__ void calculateIntensity_single_kernel(Complex *a, float *total_intens
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= size)
         return;
-    total_intensity[i] = sqrtf(a[i].x * a[i].x + a[i].y * a[i].y);
+    total_intensity[i] = a[i].x * a[i].x + a[i].y * a[i].y;
 }
 
 void calculateIntensity(Complex *a, Complex *b, float *total_intensity, unsigned long size, cudaStream_t stream)

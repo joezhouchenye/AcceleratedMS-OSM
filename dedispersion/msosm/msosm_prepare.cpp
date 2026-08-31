@@ -75,52 +75,109 @@ void Prepare_MSOSM::override_order(int order)
 
 void Prepare_MSOSM::generate_dedisp_params(int i)
 {
-    // Dispersion filter frequency response
-    float *w;
-    w = (float *)fftwf_malloc(sizeof(float) * M);
-    float step = 2 * pi * fs / M;
-    int fftpoint = 2 * M;
-    fftwf_complex *H;
-    H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    const double pi_d = 3.14159265358979323846;
+    const double kdm_d = 4.15e15;
+    const double fs_d = static_cast<double>(fs);
+    const double dm_d = static_cast<double>(dm_values[i]);
+    const double f0_d = static_cast<double>(f0);
+    const double w0_d = 2.0 * pi_d * f0_d;
+    const double step = 2.0 * pi_d * fs_d / static_cast<double>(M);
 
-    fftwf_complex *h;
-    h = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * M);
+    int fftpoint = 2 * M;
+
+    fftwf_complex *H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    fftwf_complex *h = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * M);
 
     for (int j = 0; j < M / 2; j++)
     {
-        w[j] = -pi * fs + step * j;
-        w[j] = w[j] + pi * fs;
-        h[M / 2 + j][0] = cos(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
-        h[M / 2 + j][1] = -sin(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
-    }
-    for (int j = M / 2; j < M; j++)
-    {
-        w[j] = -pi * fs + step * j;
-        w[j] = w[j] + pi * fs;
-        h[j - M / 2][0] = cos(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
-        h[j - M / 2][1] = -sin(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
+        double w = step * static_cast<double>(j);
+        double phase = 4.0 * pi_d * pi_d * kdm_d * dm_d * w * w / ((w + w0_d) * w0_d * w0_d);
+
+        h[M / 2 + j][0] = static_cast<float>(std::cos(phase));
+        h[M / 2 + j][1] = static_cast<float>(-std::sin(phase));
     }
 
-    fftwf_plan p;
-    p = fftwf_plan_dft_1d(M, h, h, FFTW_BACKWARD, FFTW_ESTIMATE);
+    for (int j = M / 2; j < M; j++)
+    {
+        double w = step * static_cast<double>(j);
+        double phase = 4.0 * pi_d * pi_d * kdm_d * dm_d * w * w / ((w + w0_d) * w0_d * w0_d);
+
+        h[j - M / 2][0] = static_cast<float>(std::cos(phase));
+        h[j - M / 2][1] = static_cast<float>(-std::sin(phase));
+    }
+
+    fftwf_plan p = fftwf_plan_dft_1d(M, h, h, FFTW_BACKWARD, FFTW_ESTIMATE);
     fftwf_execute(p);
+    fftwf_destroy_plan(p);
+
+    const float inv_M = 1.0f / static_cast<float>(M);
+
     for (int j = 0; j < M; j++)
     {
-        H[j][0] = h[j][0] / M;
-        H[j][1] = h[j][1] / M;
+        h[j][0] *= inv_M;
+        h[j][1] *= inv_M;
     }
 
     memcpy(H, h, sizeof(fftwf_complex) * M);
-    fftwf_free(h);
-    fftwf_free(w);
+    memset(H + M, 0, sizeof(fftwf_complex) * M);
 
-    memset(H + M, 0, sizeof(fftwf_complex) * (fftpoint - M));
+    fftwf_free(h);
+
     p = fftwf_plan_dft_1d(fftpoint, H, H, FFTW_FORWARD, FFTW_ESTIMATE);
     fftwf_execute(p);
     fftwf_destroy_plan(p);
 
     dedisp_params[i] = H;
 }
+
+// void Prepare_MSOSM::generate_dedisp_params(int i)
+// {
+//     // Dispersion filter frequency response
+//     float *w;
+//     w = (float *)fftwf_malloc(sizeof(float) * M);
+//     float step = 2 * pi * fs / M;
+//     int fftpoint = 2 * M;
+//     fftwf_complex *H;
+//     H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+
+//     fftwf_complex *h;
+//     h = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * M);
+
+//     for (int j = 0; j < M / 2; j++)
+//     {
+//         w[j] = -pi * fs + step * j;
+//         w[j] = w[j] + pi * fs;
+//         h[M / 2 + j][0] = cos(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
+//         h[M / 2 + j][1] = -sin(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
+//     }
+//     for (int j = M / 2; j < M; j++)
+//     {
+//         w[j] = -pi * fs + step * j;
+//         w[j] = w[j] + pi * fs;
+//         h[j - M / 2][0] = cos(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
+//         h[j - M / 2][1] = -sin(4 * pi * pi * kdm * dm_values[i] * w[j] * w[j] / (w[j] + w0) / w0 / w0);
+//     }
+
+//     fftwf_plan p;
+//     p = fftwf_plan_dft_1d(M, h, h, FFTW_BACKWARD, FFTW_ESTIMATE);
+//     fftwf_execute(p);
+//     for (int j = 0; j < M; j++)
+//     {
+//         h[j][0] /= M;
+//         h[j][1] /= M;
+//     }
+
+//     memcpy(H, h, sizeof(fftwf_complex) * M);
+//     fftwf_free(h);
+//     fftwf_free(w);
+
+//     memset(H + M, 0, sizeof(fftwf_complex) * (fftpoint - M));
+//     p = fftwf_plan_dft_1d(fftpoint, H, H, FFTW_FORWARD, FFTW_ESTIMATE);
+//     fftwf_execute(p);
+//     fftwf_destroy_plan(p);
+
+//     dedisp_params[i] = H;
+// }
 
 void Prepare_MSOSM::segmentation(int i)
 {
