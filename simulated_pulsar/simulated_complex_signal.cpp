@@ -1,4 +1,5 @@
 #include "simulated_complex_signal.h"
+#include <omp.h>
 
 /**
  * @brief SimulatedComplexSignal constructor
@@ -75,9 +76,8 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
         cout << " (period points = " << Np << ")" << endl;
     }
 
-    fftwf_complex *signal, *signal_fd;
+    fftwf_complex *signal;
     signal = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * Np);
-    signal_fd = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
 
     // Dispersion filter frequency response
     // float w[fftpoint];
@@ -88,6 +88,7 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
     H1 = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * order);
     H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
 
+    #pragma omp parallel for schedule(static)
     for (unsigned long i = 0; i < order / 2; i++)
     {
         w[i] = -pi * fs + step * i;
@@ -95,6 +96,7 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
         H1[order / 2 + i][0] = cos(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
         H1[order / 2 + i][1] = sin(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
     }
+    #pragma omp parallel for schedule(static)
     for (unsigned long i = order / 2; i < order; i++)
     {
         w[i] = -pi * fs + step * i;
@@ -120,9 +122,10 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
     fftwf_destroy_plan(p);
 
     // Add dispersion
-    fftwf_plan p_f, p_b;
-    p_f = fftwf_plan_dft_1d(fftpoint, signal_fd, signal_fd, FFTW_FORWARD, FFTW_ESTIMATE);
-    p_b = fftwf_plan_dft_1d(fftpoint, signal_fd, signal_fd, FFTW_BACKWARD, FFTW_ESTIMATE);
+    fftwf_complex *dummy_buf = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    fftwf_plan p_f = fftwf_plan_dft_1d(fftpoint, dummy_buf, dummy_buf, FFTW_FORWARD, FFTW_ESTIMATE);
+    fftwf_plan p_b = fftwf_plan_dft_1d(fftpoint, dummy_buf, dummy_buf, FFTW_BACKWARD, FFTW_ESTIMATE);
+    fftwf_free(dummy_buf);
 
     memset(this->signal, 0, sizeof(fftwf_complex) * Np);
 
@@ -132,46 +135,62 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
     signal[pulse_position][0] = 1;
     signal[pulse_position + 2][0] = 1;
 
-    for (unsigned long i = 0; i < range; i++)
+    const float inv_fftpoint = 1.0f / fftpoint;
+
+    #pragma omp parallel
     {
-        memset(signal_fd, 0, sizeof(fftwf_complex) * fftpoint);
-        memcpy(signal_fd + i * Np, signal, sizeof(fftwf_complex) * Np);
-        fftwf_execute(p_f);
-        float real, imag;
-        for (unsigned long j = 0; j < fftpoint; j++)
+        fftwf_complex *thread_signal_fd = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+        fftwf_complex *thread_local_signal = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * Np);
+        memset(thread_local_signal, 0, sizeof(fftwf_complex) * Np);
+
+        #pragma omp for schedule(dynamic)
+        for (unsigned long i = 0; i < range; i++)
         {
-            real = signal_fd[j][0] * H[j][0] - signal_fd[j][1] * H[j][1];
-            imag = signal_fd[j][0] * H[j][1] + signal_fd[j][1] * H[j][0];
-            signal_fd[j][0] = real;
-            signal_fd[j][1] = imag;
+            memset(thread_signal_fd, 0, sizeof(fftwf_complex) * fftpoint);
+            memcpy(thread_signal_fd + i * Np, signal, sizeof(fftwf_complex) * Np);
+            fftwf_execute_dft(p_f, thread_signal_fd, thread_signal_fd);
+            for (unsigned long j = 0; j < fftpoint; j++)
+            {
+                float real = (thread_signal_fd[j][0] * H[j][0] - thread_signal_fd[j][1] * H[j][1]) * inv_fftpoint;
+                float imag = (thread_signal_fd[j][0] * H[j][1] + thread_signal_fd[j][1] * H[j][0]) * inv_fftpoint;
+                thread_signal_fd[j][0] = real;
+                thread_signal_fd[j][1] = imag;
+            }
+            fftwf_execute_dft(p_b, thread_signal_fd, thread_signal_fd);
+            for (unsigned long j = 0; j < Np; j++)
+            {
+                thread_local_signal[j][0] += thread_signal_fd[j][0];
+                thread_local_signal[j][1] += thread_signal_fd[j][1];
+            }
         }
-        fftwf_execute(p_b);
-        for (unsigned long j = 0; j < fftpoint; j++)
+
+        #pragma omp critical
         {
-            signal_fd[j][0] = signal_fd[j][0] / fftpoint;
-            signal_fd[j][1] = signal_fd[j][1] / fftpoint;
+            for (unsigned long j = 0; j < Np; j++)
+            {
+                this->signal[j][0] += thread_local_signal[j][0];
+                this->signal[j][1] += thread_local_signal[j][1];
+            }
         }
-        for (unsigned long j = 0; j < Np; j++)
-        {
-            this->signal[j][0] = this->signal[j][0] + signal_fd[j][0];
-            this->signal[j][1] = this->signal[j][1] + signal_fd[j][1];
-        }
+
+        fftwf_free(thread_signal_fd);
+        fftwf_free(thread_local_signal);
     }
 
     fftwf_destroy_plan(p_f);
     fftwf_destroy_plan(p_b);
 
     fftwf_free(signal);
-    fftwf_free(signal_fd);
     fftwf_free(H);
     fftwf_free(w);
 
-    signal_power = 0;
+    double power_sum = 0;
+    #pragma omp parallel for reduction(+:power_sum) schedule(static)
     for (unsigned long i = 0; i < Np; i++)
     {
-        signal_power = signal_power + this->signal[i][0] * this->signal[i][0] + this->signal[i][1] * this->signal[i][1];
+        power_sum += this->signal[i][0] * this->signal[i][0] + this->signal[i][1] * this->signal[i][1];
     }
-    signal_power = 10 * log10(signal_power / Np);
+    signal_power = 10 * log10(power_sum / Np);
     if (verbose)
     {
         cout << "Signal measured power: " << signal_power << " dB" << endl;
@@ -200,30 +219,47 @@ void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool a
     if (verbose)
         line();
 
-    for (unsigned long i = 0; i < repeat; i++)
+    if (!add_noise)
     {
-        if (i != 0)
+        if (data_type == "uint16")
         {
-            memcpy(this->signal + i * Np, this->signal, sizeof(fftwf_complex) * Np);
-        }
-        if (!add_noise && data_type == "uint16")
-        {
+            #pragma omp parallel for schedule(static)
             for (unsigned long j = 0; j < Np; j++)
             {
-                this->signal_u16[i * Np + j].first = this->signal[i * Np + j][0] == 0 ? 0 : static_cast<uint16_t>(this->signal[i * Np + j][0] * 32767.0f + 32768.0f);
-                this->signal_u16[i * Np + j].second = this->signal[i * Np + j][1] == 0 ? 0 : static_cast<uint16_t>(this->signal[i * Np + j][1] * 32767.0f + 32768.0f);
+                this->signal_u16[j].first = (this->signal[j][0] == 0) ? 0 : static_cast<uint16_t>(this->signal[j][0] * 32767.0f + 32768.0f);
+                this->signal_u16[j].second = (this->signal[j][1] == 0) ? 0 : static_cast<uint16_t>(this->signal[j][1] * 32767.0f + 32768.0f);
+            }
+            #pragma omp parallel for schedule(static)
+            for (unsigned long i = 1; i < repeat; i++)
+            {
+                memcpy(this->signal + i * Np, this->signal, sizeof(fftwf_complex) * Np);
+                memcpy(this->signal_u16 + i * Np, this->signal_u16, sizeof(uint16_pair) * Np);
             }
         }
-        if (add_noise)
+        else
         {
+            #pragma omp parallel for schedule(static)
+            for (unsigned long i = 1; i < repeat; i++)
+            {
+                memcpy(this->signal + i * Np, this->signal, sizeof(fftwf_complex) * Np);
+            }
+        }
+    }
+    else
+    {
+        #pragma omp parallel for schedule(static)
+        for (unsigned long i = 0; i < repeat; i++)
+        {
+            unsigned long base = i * Np;
             for (unsigned long j = 0; j < Np; j++)
             {
-                this->signal[i * Np + j][0] = this->signal[i * Np + j][0] + noise[i * Np + j][0];
-                this->signal[i * Np + j][1] = this->signal[i * Np + j][1] + noise[i * Np + j][1];
+                unsigned long idx = base + j;
+                this->signal[idx][0] = this->signal[j][0] + noise[idx][0];
+                this->signal[idx][1] = this->signal[j][1] + noise[idx][1];
                 if (data_type == "uint16")
                 {
-                    this->signal_u16[i * Np + j].first = (this->signal[i * Np + j][0] == 0) ? 0 : static_cast<uint16_t>(this->signal[i * Np + j][0] * 32767.0f + 32768.0f);
-                    this->signal_u16[i * Np + j].second = (this->signal[i * Np + j][1] == 0) ? 0 : static_cast<uint16_t>(this->signal[i * Np + j][1] * 32767.0f + 32768.0f);
+                    this->signal_u16[idx].first = (this->signal[idx][0] == 0) ? 0 : static_cast<uint16_t>(this->signal[idx][0] * 32767.0f + 32768.0f);
+                    this->signal_u16[idx].second = (this->signal[idx][1] == 0) ? 0 : static_cast<uint16_t>(this->signal[idx][1] * 32767.0f + 32768.0f);
                 }
             }
         }

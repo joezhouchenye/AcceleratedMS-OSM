@@ -94,6 +94,9 @@ find_package(pybind11 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBURING REQUIRED liburing)
 
+# OpenMP
+find_package(OpenMP REQUIRED)
+
 foreach(EXE ${EXECTABLES})
 
   # target
@@ -107,6 +110,9 @@ foreach(EXE ${EXECTABLES})
 
   # FFTW
   target_link_libraries(${EXE} fftw3f)
+
+  # OpenMP
+  target_link_libraries(${EXE} OpenMP::OpenMP_CXX)
 
   # NVTX
   target_link_libraries(${EXE} CUDA::nvtx3)
@@ -130,6 +136,9 @@ foreach(BENCH_EXE ${BENCHMARK_EXECUTABLES})
 
   # FFTW
   target_link_libraries(${BENCH_EXE} fftw3f)
+
+  # OpenMP
+  target_link_libraries(${BENCH_EXE} OpenMP::OpenMP_CXX)
 
   # NVTX
   target_link_libraries(${BENCH_EXE} CUDA::nvtx3)

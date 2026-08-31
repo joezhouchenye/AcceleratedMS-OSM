@@ -359,6 +359,9 @@ static __global__ void discardSamples_kernel(Complex *a, Complex *b, int M, int 
     val.x *= scale;
     val.y *= scale;
 
+    // val.x = __float2uint_rn(val.x + 32768.0f) - 32768.0f;
+    // val.y = __float2uint_rn(val.y + 32768.0f) - 32768.0f;
+
     b_f2[i] = val;
 }
 
