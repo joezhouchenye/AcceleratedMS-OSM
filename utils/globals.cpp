@@ -101,3 +101,9 @@ void plot(T *signal, unsigned long size)
 
 template void plot<float>(float *, unsigned long);
 template void plot<unsigned long>(unsigned long *, unsigned long);
+
+void plot(vector<double> &v_signal)
+{
+    plt.attr("plot")(v_signal);
+    mplcursors.attr("cursor")();
+}

@@ -128,6 +128,8 @@ static __global__ void gatherMultiply_kernel(
     if (threadIdx.x == 0)
     {
         meta = delay_block_meta[dm_idx];
+        if (seg_idx >= meta.seg_count)
+            return;
         seg = segments[meta.seg_offset + seg_idx];
     }
     __syncthreads();

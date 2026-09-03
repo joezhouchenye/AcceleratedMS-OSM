@@ -34,6 +34,37 @@ void Prepare_OSM::override_order(unsigned long order)
     M = order;
 }
 
+static void apply_tukey_window(fftwf_complex *data, int N, double alpha)
+{
+    const double pi = 3.14159265358979323846;
+
+    if (alpha <= 0.0)
+        return;
+
+    if (alpha > 1.0)
+        alpha = 1.0;
+
+    for (int i = 0; i < N; i++)
+    {
+        const double x = static_cast<double>(i) / static_cast<double>(N - 1);
+        double win = 1.0;
+
+        if (x < alpha / 2.0)
+        {
+            win = 0.5 * (1.0 + std::cos(
+                pi * (2.0 * x / alpha - 1.0)));
+        }
+        else if (x > 1.0 - alpha / 2.0)
+        {
+            win = 0.5 * (1.0 + std::cos(
+                pi * (2.0 * x / alpha - 2.0 / alpha + 1.0)));
+        }
+
+        data[i][0] *= static_cast<float>(win);
+        data[i][1] *= static_cast<float>(win);
+    }
+}
+
 void Prepare_OSM::generate_dedisp_params()
 {
     const double pi_d = 3.14159265358979323846;
@@ -79,6 +110,8 @@ void Prepare_OSM::generate_dedisp_params()
         h[i][1] *= inv_M;
     }
 
+    // apply_tukey_window(h, M, 0.5);
+
     memcpy(H, h, sizeof(fftwf_complex) * M);
     memset(H + M, 0, sizeof(fftwf_complex) * M);
 
@@ -90,55 +123,6 @@ void Prepare_OSM::generate_dedisp_params()
 
     dedisp_params = H;
 }
-
-// void Prepare_OSM::generate_dedisp_params()
-// {
-//     // Dispersion filter frequency response
-//     float *w;
-//     w = (float *)fftwf_malloc(sizeof(float) * M);
-//     float step = 2 * pi * fs / M;
-//     unsigned long fftpoint = 2 * M;
-//     fftwf_complex *H;
-//     H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
-
-//     fftwf_complex *h;
-//     h = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * M);
-
-//     for (unsigned long i = 0; i < M / 2; i++)
-//     {
-//         w[i] = -pi * fs + step * i;
-//         w[i] = w[i] + pi * fs;
-//         h[M / 2 + i][0] = cos(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
-//         h[M / 2 + i][1] = -sin(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
-//     }
-//     for (unsigned long i = M / 2; i < M; i++)
-//     {
-//         w[i] = -pi * fs + step * i;
-//         w[i] = w[i] + pi * fs;
-//         h[i - M / 2][0] = cos(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
-//         h[i - M / 2][1] = -sin(4 * pi * pi * kdm * dm * w[i] * w[i] / (w[i] + w0) / w0 / w0);
-//     }
-
-//     fftwf_plan p;
-//     p = fftwf_plan_dft_1d(M, h, h, FFTW_BACKWARD, FFTW_ESTIMATE);
-//     fftwf_execute(p);
-//     for (unsigned long i = 0; i < M; i++)
-//     {
-//         h[i][0] /= M;
-//         h[i][1] /= M;
-//     }
-
-//     memcpy(H, h, sizeof(fftwf_complex) * M);
-//     fftwf_free(h);
-//     fftwf_free(w);
-
-//     memset(H + M, 0, sizeof(fftwf_complex) * (fftpoint - M));
-//     p = fftwf_plan_dft_1d(fftpoint, H, H, FFTW_FORWARD, FFTW_ESTIMATE);
-//     fftwf_execute(p);
-//     fftwf_destroy_plan(p);
-
-//     dedisp_params = H;
-// }
 
 int Prepare_OSM::next_power_of_2(int n)
 {

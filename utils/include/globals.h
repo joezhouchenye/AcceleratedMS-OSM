@@ -39,3 +39,5 @@ void plot_pol1(uint16_pair *signal, unsigned long size);
 void plot_pol2(uint16_pair *signal, unsigned long size);
 template <typename T>
 void plot(T *signal, unsigned long size);
+
+void plot(vector<double> &v_signal);

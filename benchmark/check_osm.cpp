@@ -9,11 +9,12 @@ int main(int argc, char *argv[])
     int batch = 1;
     float bw = 128e6;
     float dm = 75;
+    string dm_filename_value = "75";
     float f0 = 1e9;
     unsigned long fftpoint = 0;
     float period = 0.002048;
 
-    unsigned long osm_process_len = 268435456;
+    unsigned long osm_process_len = 2097152 * 8;
     const struct option long_options[] = {
         {"verbose", no_argument, nullptr, 'v'},
         {"batch", required_argument, nullptr, 'b'},
@@ -39,6 +40,7 @@ int main(int argc, char *argv[])
             continue;
         case 'd':
             dm = stof(optarg);
+            dm_filename_value = optarg;
             continue;
         case 'f':
             f0 = stof(optarg);
@@ -69,16 +71,29 @@ int main(int argc, char *argv[])
     cout << "Process Length: " << process_len << endl;
 
     unsigned long block_size = static_cast<unsigned long>(period * bw);
-    unsigned long repeat = process_len / block_size;
-    if (repeat == 0)
-        repeat = 1;
-    if (repeat < osm_process_len / block_size)
-        repeat = osm_process_len / block_size;
+    // Use the requested comparison length only, so OSM and MS-OSM fold the
+    // same number of simulated pulse periods regardless of their batch sizes.
+    unsigned long repeat = osm_process_len / block_size;
     if (repeat == 0)
         repeat = 1;
 
+    // The first M output samples depend on the initially zero-filled overlap
+    // buffer. Skip them and begin folding at the next pulse-period boundary.
+    const unsigned long warmup_samples = osm.M;
+    const unsigned long fold_start =
+        ((warmup_samples + block_size - 1) / block_size) * block_size;
+    const unsigned long required_samples = fold_start + repeat * block_size;
+    const unsigned long required_process_count =
+        (required_samples + process_len - 1) / process_len;
+    const unsigned long generated_periods =
+        (required_process_count * process_len + block_size - 1) / block_size;
+
+    cout << "Warm-up Samples: " << fold_start << endl;
+    cout << "Folded Periods: " << repeat << endl;
+
     SimulatedComplexSignal simulated_signal(bw, dm, f0, period, "uint16");
-    simulated_signal.generate_pulsar_signal_new(repeat, false, 0, false);
+    simulated_signal.generate_pulsar_signal_new(generated_periods);
+    // simulated_signal.generate_pulsar_signal(repeat, false, 0, false);
     unsigned long signal_size = simulated_signal.signal_size;
     uint16_pair *input = simulated_signal.signal_u16;
     cout << "Signal Size: " << signal_size << endl;
@@ -119,16 +134,36 @@ int main(int argc, char *argv[])
     auto stop = chrono::high_resolution_clock::now();
 
     double time = chrono::duration_cast<chrono::nanoseconds>(stop - start).count() / 1000000.0;
-    Complex *plot_output = output + (process_count - 1) * process_len;
+
+    vector<double> folded_abs(block_size, 0.0);
+    for (unsigned long p = 0; p < repeat; p++)
+    {
+        unsigned long base = fold_start + p * block_size;
+
+        for (unsigned long i = 0; i < block_size; i++)
+        {
+            const Complex &sample = output[base + i];
+
+            float real = sample.x;
+            float imag = sample.y;
+
+            folded_abs[i] += std::sqrt(static_cast<double>(real) * real + static_cast<double>(imag) * imag);
+        }
+    }
+    for (unsigned long i = 0; i < block_size; i++)
+        folded_abs[i] /= static_cast<double>(repeat);
+
     plot_init();
-    plot_abs(plot_output, block_size);
+    plot(folded_abs);
     show();
 
-    ofstream abs_output("check_osm_abs.txt");
+    // Save folded profile
+    string filename = "check_osm_abs_DM" + dm_filename_value + ".txt";
+    ofstream abs_output(filename);
     for (unsigned long i = 0; i < block_size; i++)
-    {
-        abs_output << sqrt(plot_output[i].x * plot_output[i].x + plot_output[i].y * plot_output[i].y) << '\n';
-    }
+        abs_output << folded_abs[i] << '\n';
+
+    abs_output.close();
 
     CUDA_CHECK(cudaHostUnregister(output));
     CUDA_CHECK(cudaHostUnregister(input));

@@ -38,93 +38,96 @@ SimulatedComplexSignal::SimulatedComplexSignal(float bw, float dm, float f0, flo
     }
 }
 
-void SimulatedComplexSignal::generate_pulsar_signal_new(
-    unsigned long repeat,
-    bool add_noise,
-    float SNR,
-    bool pinned)
+static void generate_test_pulse(fftwf_complex *signal, unsigned long Np, mt19937 &generator)
+{
+    double *profile = new double[Np];
+    double max_amp = 0.0;
+
+    for (unsigned long i = 0; i < Np; i++)
+    {
+        const double x = static_cast<double>(i) / static_cast<double>(Np);
+        const double p1 = 0.45 * std::exp(-0.5 * std::pow((x - 0.455) / 0.008, 2.0));
+        const double p2 = 1.00 * std::exp(-0.5 * std::pow((x - 0.500) / 0.012, 2.0));
+        const double p3 = 0.28 * std::exp(-0.5 * std::pow((x - 0.555) / 0.006, 2.0));
+        const double value = p1 + p2 + p3;
+
+        profile[i] = value;
+        max_amp = std::max(max_amp, value);
+    }
+
+    const double scale = 20000.0 / max_amp;
+    normal_distribution<double> normal_dist(0.0, 1.0);
+
+    for (unsigned long i = 0; i < Np; i++)
+    {
+        const double amplitude = profile[i] * scale / sqrt(2.0);
+        signal[i][0] = static_cast<float>(amplitude * normal_dist(generator));
+        signal[i][1] = static_cast<float>(amplitude * normal_dist(generator));
+    }
+    delete[] profile;
+}
+
+void SimulatedComplexSignal::generate_pulsar_signal_new(unsigned long repeat)
 {
     if (verbose)
         cout << "Generating pulsar signal" << endl;
 
-    if (add_noise && verbose)
-    {
-        cout << "Noise will be added..." << endl;
-        cout << "SNR: " << SNR << " dB" << endl;
-        line();
-    }
-
     signal_size = repeat * Np;
 
-    if (pinned)
-        cudaMallocHost((void **)&this->signal, sizeof(fftwf_complex) * signal_size);
-    else
-        this->signal = (fftwf_complex *)malloc(sizeof(fftwf_complex) * signal_size);
+    this->signal = (fftwf_complex *)malloc(sizeof(fftwf_complex) * signal_size);
 
     if (data_type == "uint16")
     {
-        if (pinned)
-            cudaMallocHost((void **)&this->signal_u16, sizeof(uint16_pair) * signal_size);
-        else
-            this->signal_u16 = (uint16_pair *)malloc(sizeof(uint16_pair) * signal_size);
+        this->signal_u16 = (uint16_pair *)malloc(sizeof(uint16_pair) * signal_size);
     }
 
     range = static_cast<unsigned long>(ceil((double)Nd / (double)Np));
 
-    if (verbose)
-    {
-        cout << "Dispersion spread periods: " << range << endl;
-    }
-
-    // ---------------------------------------------------------
-    // Generate one original pulse period
-    // ---------------------------------------------------------
-
-    fftwf_complex *one_period = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * Np);
-    memset(one_period, 0, sizeof(fftwf_complex) * Np);
-
-    unsigned long pulse_position = Np / 2 - 1;
-
-    one_period[pulse_position][0] = 10000.0f;
-    one_period[pulse_position][1] = 0.0f;
-    one_period[pulse_position + 2][0] = 10000.0f;
-    one_period[pulse_position + 2][1] = 0.0f;
-
-    // ---------------------------------------------------------
-    // Generate a sufficiently long periodic pulse train
-    // ---------------------------------------------------------
-
+    // Extra periods on both sides
     unsigned long guard_periods = range + 2;
-    unsigned long num_periods = 2 * guard_periods + 1;
-    unsigned long long_period_size = num_periods * Np;
-    // FFT length >= signal length + dispersion spread
-    unsigned long required_size = long_period_size + Nd;
+
+    // Total continuous periods:
+    // guard + useful periods + guard
+    unsigned long total_periods = repeat + 2 * guard_periods;
+
+    unsigned long long_signal_size = total_periods * Np;
+
+    // Zero padding for linear-convolution margin
+    unsigned long required_size = long_signal_size + Nd;
+
     unsigned long fftpoint = 1;
+
     while (fftpoint < required_size)
         fftpoint <<= 1;
 
     if (verbose)
     {
-        cout << "Number of simulated periods: " << num_periods << endl;
-        cout << "Using FFT points = " << fftpoint << endl;
+        cout << "Useful periods: " << repeat << endl;
+        cout << "Guard periods per side: "
+             << guard_periods << endl;
+        cout << "Total generated periods: "
+             << total_periods << endl;
+        cout << "FFT points: "
+             << fftpoint << endl;
     }
+
+    // ---------------------------------------------------------
+    // Generate the COMPLETE continuous undispersed signal
+    // ---------------------------------------------------------
 
     fftwf_complex *signal_long = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
 
     memset(signal_long, 0, sizeof(fftwf_complex) * fftpoint);
 
-    // Repeat original pulse period
-    for (unsigned long i = 0; i < num_periods; i++)
+    mt19937 generator(1);
+    for (unsigned long p = 0; p < total_periods; p++)
     {
-        memcpy(signal_long + i * Np, one_period, sizeof(fftwf_complex) * Np);
+        generate_test_pulse(signal_long + p * Np, Np, generator);
     }
 
     // ---------------------------------------------------------
-    // Construct theoretical dispersion transfer function
-    // directly at fftpoint frequency bins
+    // Construct dispersion response
     // ---------------------------------------------------------
-
-    fftwf_complex *H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
 
     const double pi_d = 3.14159265358979323846;
     const double kdm_d = 4.15e15;
@@ -133,40 +136,71 @@ void SimulatedComplexSignal::generate_pulsar_signal_new(
     const double f0_d = static_cast<double>(f0);
     const double w0_d = 2.0 * pi_d * f0_d;
 
-    const double freq_step =
-        fs_d / static_cast<double>(fftpoint);
+    unsigned long filter_point = 1;
+    while (filter_point < Nd + 1)
+        filter_point <<= 1;
 
-#pragma omp parallel for schedule(static)
-    for (unsigned long k = 0; k < fftpoint; k++)
+    fftwf_complex *H_filter = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * filter_point);
+    fftwf_complex *h_filter = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * filter_point);
+
+    const double filter_freq_step = fs_d / static_cast<double>(filter_point);
+
+    for (unsigned long k = 0; k < filter_point; k++)
     {
         double f_disp;
 
-        if (k < fftpoint / 2)
-            f_disp = fs_d / 2.0 +
-                     static_cast<double>(k) * freq_step;
+        if (k < filter_point / 2)
+            f_disp = fs_d / 2.0 + static_cast<double>(k) * filter_freq_step;
         else
-            f_disp = static_cast<double>(k) * freq_step -
-                     fs_d / 2.0;
+            f_disp = static_cast<double>(k) * filter_freq_step - fs_d / 2.0;
 
         const double w = 2.0 * pi_d * f_disp;
+        const double phase = 4.0 * pi_d * pi_d * kdm_d * dm_d * w * w / ((w + w0_d) * w0_d * w0_d);
 
-        const double phase =
-            4.0 * pi_d * pi_d *
-            kdm_d * dm_d *
-            w * w /
-            ((w + w0_d) * w0_d * w0_d);
-
-        H[k][0] = static_cast<float>(std::cos(phase));
-        H[k][1] = static_cast<float>(std::sin(phase));
+        H_filter[k][0] = static_cast<float>(std::cos(phase));
+        H_filter[k][1] = static_cast<float>(std::sin(phase));
     }
 
+    fftwf_plan p_filter_ifft = fftwf_plan_dft_1d(filter_point, H_filter, h_filter, FFTW_BACKWARD, FFTW_ESTIMATE);
+    fftwf_execute(p_filter_ifft);
+    fftwf_destroy_plan(p_filter_ifft);
+
+    const float inv_filter_point = 1.0f / static_cast<float>(filter_point);
+
+    for (unsigned long i = 0; i < filter_point; i++)
+    {
+        h_filter[i][0] *= inv_filter_point;
+        h_filter[i][1] *= inv_filter_point;
+    }
+
+    fftwf_complex *H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    memset(H, 0, sizeof(fftwf_complex) * fftpoint);
+
+    // With the positive dispersion phase used above, FFTW's inverse transform
+    // places the physical (negative-time) impulse response at the end of the
+    // circular buffer.  Move that Nd + 1 sample response to index zero to make
+    // it causal before applying it as a linear convolution.  Copying from the
+    // beginning discards most of the response energy for larger DMs.
+    memcpy(H,
+           h_filter + (filter_point - Nd),
+           sizeof(fftwf_complex) * Nd);
+    H[Nd][0] = h_filter[0][0];
+    H[Nd][1] = h_filter[0][1];
+
+    fftwf_plan p_filter_fft = fftwf_plan_dft_1d(fftpoint, H, H, FFTW_FORWARD, FFTW_ESTIMATE);
+    fftwf_execute(p_filter_fft);
+    fftwf_destroy_plan(p_filter_fft);
+
+    fftwf_free(H_filter);
+    fftwf_free(h_filter);
+
     // ---------------------------------------------------------
-    // Add dispersion:
-    // FFT(signal) -> multiply H -> IFFT
+    // Add dispersion ONCE to the complete signal
     // ---------------------------------------------------------
 
     fftwf_plan p_f = fftwf_plan_dft_1d(fftpoint, signal_long, signal_long, FFTW_FORWARD, FFTW_ESTIMATE);
     fftwf_plan p_b = fftwf_plan_dft_1d(fftpoint, signal_long, signal_long, FFTW_BACKWARD, FFTW_ESTIMATE);
+
     fftwf_execute(p_f);
 
     for (unsigned long k = 0; k < fftpoint; k++)
@@ -179,7 +213,6 @@ void SimulatedComplexSignal::generate_pulsar_signal_new(
 
     fftwf_execute(p_b);
 
-    // FFTW backward transform is unnormalized
     const float inv_fftpoint = 1.0f / static_cast<float>(fftpoint);
 
 #pragma omp parallel for schedule(static)
@@ -190,126 +223,38 @@ void SimulatedComplexSignal::generate_pulsar_signal_new(
     }
 
     // ---------------------------------------------------------
-    // Extract central period
+    // Extract the central repeat periods
     // ---------------------------------------------------------
 
-    unsigned long center_period = guard_periods;
-    unsigned long start_index = center_period * Np;
+    // Causalizing the dispersion impulse response adds a pure Nd-sample
+    // delay.  Skip that delay here so a correctly dedispersed pulse keeps the
+    // same phase/position as the original undispersed pulse.
+    unsigned long start_index = guard_periods * Np + Nd;
 
-    // Save one dispersed period in this->signal[0:Np]
-    memcpy(this->signal, signal_long + start_index, sizeof(fftwf_complex) * Np);
+    memcpy(this->signal, signal_long + start_index, sizeof(fftwf_complex) * signal_size);
+
+    // ---------------------------------------------------------
+    // Convert to uint16
+    // ---------------------------------------------------------
+
+    if (data_type == "uint16")
+    {
+#pragma omp parallel for schedule(static)
+        for (unsigned long i = 0; i < signal_size; i++)
+        {
+            float real = this->signal[i][0];
+            float imag = this->signal[i][1];
+
+            this->signal_u16[i].first = static_cast<uint16_t>(real + 32768.0f);
+            this->signal_u16[i].second = static_cast<uint16_t>(imag + 32768.0f);
+        }
+    }
 
     fftwf_destroy_plan(p_f);
     fftwf_destroy_plan(p_b);
 
     fftwf_free(H);
     fftwf_free(signal_long);
-    fftwf_free(one_period);
-
-    // ---------------------------------------------------------
-    // Measure signal power
-    // ---------------------------------------------------------
-
-    double power_sum = 0.0;
-
-#pragma omp parallel for reduction(+ : power_sum) schedule(static)
-    for (unsigned long i = 0; i < Np; i++)
-    {
-        power_sum += this->signal[i][0] * this->signal[i][0] + this->signal[i][1] * this->signal[i][1];
-    }
-
-    signal_power = 10.0 * log10(power_sum / static_cast<double>(Np));
-
-    if (verbose)
-    {
-        cout << "Signal measured power: " << signal_power << " dB" << endl;
-        line();
-    }
-
-    // ---------------------------------------------------------
-    // Generate noise
-    // ---------------------------------------------------------
-
-    fftwf_complex *noise = NULL;
-    AWGN g(SNR - signal_power, signal_size);
-    if (add_noise)
-        noise = g.generateNoiseSamples();
-
-    if (verbose)
-    {
-        cout << "Repeat signal..." << endl;
-        cout << "Repeat: " << repeat << endl;
-        cout << "Signal Size: " << signal_size << endl;
-    }
-
-    if (!add_noise && verbose)
-    {
-        cout << "No noise added!" << endl;
-    }
-
-    if (verbose)
-        line();
-
-    // ---------------------------------------------------------
-    // Repeat dispersed period
-    // ---------------------------------------------------------
-
-    if (!add_noise)
-    {
-        if (data_type == "uint16")
-        {
-#pragma omp parallel for schedule(static)
-            for (unsigned long j = 0; j < Np; j++)
-            {
-                float real = this->signal[j][0];
-                float imag = this->signal[j][1];
-                this->signal_u16[j].first = static_cast<uint16_t>(real + 32768.0f);
-                this->signal_u16[j].second = static_cast<uint16_t>(imag + 32768.0f);
-            }
-
-#pragma omp parallel for schedule(static)
-            for (unsigned long i = 1; i < repeat; i++)
-            {
-                memcpy(this->signal + i * Np, this->signal, sizeof(fftwf_complex) * Np);
-                memcpy(this->signal_u16 + i * Np, this->signal_u16, sizeof(uint16_pair) * Np);
-            }
-        }
-        else
-        {
-#pragma omp parallel for schedule(static)
-            for (unsigned long i = 1; i < repeat; i++)
-            {
-                memcpy(this->signal + i * Np, this->signal, sizeof(fftwf_complex) * Np);
-            }
-        }
-    }
-    else
-    {
-#pragma omp parallel for schedule(static)
-        for (unsigned long i = 0; i < repeat; i++)
-        {
-            unsigned long base = i * Np;
-            for (unsigned long j = 0; j < Np; j++)
-            {
-                unsigned long idx = base + j;
-                this->signal[idx][0] = this->signal[j][0] + noise[idx][0];
-                this->signal[idx][1] = this->signal[j][1] + noise[idx][1];
-
-                if (data_type == "uint16")
-                {
-                    float real = this->signal[idx][0];
-                    float imag = this->signal[idx][1];
-                    real = max(-32768.0f, min(32767.0f, real));
-                    imag = max(-32768.0f, min(32767.0f, imag));
-                    this->signal_u16[idx].first = static_cast<uint16_t>(real + 32768.0f);
-                    this->signal_u16[idx].second = static_cast<uint16_t>(imag + 32768.0f);
-                }
-            }
-        }
-    }
-
-    if (add_noise)
-        g.deallocate();
 }
 
 void SimulatedComplexSignal::generate_pulsar_signal(unsigned long repeat, bool add_noise, float SNR, bool pinned)

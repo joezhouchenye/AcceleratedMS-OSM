@@ -11,11 +11,12 @@ int main(int argc, char *argv[])
     // Pulsar signal parameters
     float bw = 128e6;
     float dm = 75;
+    string dm_filename_value = "75";
     float f0 = 1e9;
     int numDMs = 1;
     unsigned long fftpoint = 0;
     // Compare proces length with OSM
-    unsigned long osm_process_len = 268435456;
+    unsigned long osm_process_len = 2097152 * 16;
     const struct option long_options[] = {
         {"verbose", no_argument, nullptr, 'v'},
         {"batch", required_argument, nullptr, 'b'},
@@ -41,6 +42,7 @@ int main(int argc, char *argv[])
             continue;
         case 'd':
             dm = stof(optarg);
+            dm_filename_value = optarg;
             continue;
         case 'f':
             f0 = stof(optarg);
@@ -80,31 +82,55 @@ int main(int argc, char *argv[])
     unsigned long process_len = batch * M;
 
     cout << "Nd: " << msosm->start_Nd << endl;
-    unsigned long max_process_len;
-    max_process_len = batch * M;
 
-    cout << "Max Process Length: " << max_process_len << endl;
+    cout << "Process Length: " << process_len << endl;
     cout << "Compared with OSM Process Length: " << osm_process_len << endl;
 
-    int inputSize;
     float period = 0.002048;
     unsigned long block_size = static_cast<unsigned long>(period * bw);
 
-    inputSize = max_process_len / block_size;
-    if (inputSize == 0)
-        inputSize = 1;
-    if (inputSize > osm_process_len / block_size)
+    // Use exactly the same requested comparison length as check_osm.
+    unsigned long repeat = osm_process_len / block_size;
+    if (repeat == 0)
+        repeat = 1;
+
+    // MS-OSM gathers frequency segments from earlier FFT blocks.  Warm up by
+    // enough complete calls to make every delayed source block valid, then
+    // start folding at a pulse-period boundary.
+    const unsigned long history_blocks =
+        msosm->delaycount > 0 ? static_cast<unsigned long>(msosm->delaycount) : 1UL;
+    const unsigned long msosm_warmup_samples = M;
+
+    // Match check_osm's warm-up boundary. Its default M is twice the next
+    // power of two at least as large as Nd. If --fftpoint overrides it, apply
+    // the same lower-bound rule used by OSM_GPU_BATCH.
+    unsigned long osm_order = 1;
+    while (osm_order < static_cast<unsigned long>(msosm->start_Nd))
+        osm_order <<= 1;
+    unsigned long common_warmup_samples = 2 * osm_order;
+    if (fftpoint != 0 && fftpoint / 2 > common_warmup_samples)
+        common_warmup_samples = fftpoint / 2;
+    if (msosm_warmup_samples > common_warmup_samples)
     {
-        cout << "The compared OSM process length is too short" << endl;
+        cerr << "The common OSM warm-up is shorter than the MS-OSM history requirement; "
+             << "the two profiles cannot use the same simulated periods." << endl;
+        return 1;
     }
-    else
-    {
-        inputSize = osm_process_len / block_size;
-        if (inputSize == 0)
-            inputSize = 1;
-    }
+
+    const unsigned long fold_start =
+        ((common_warmup_samples + block_size - 1) / block_size) * block_size;
+    const unsigned long required_samples = fold_start + repeat * block_size;
+    const unsigned long required_process_count =
+        (required_samples + process_len - 1) / process_len;
+    const unsigned long generated_periods =
+        (required_process_count * process_len + block_size - 1) / block_size;
+
+    cout << "Warm-up Samples: " << fold_start << endl;
+    cout << "Folded Periods: " << repeat << endl;
+
     simulated_signal = new SimulatedComplexSignal(bw, dm, f0, period, "uint16");
-    simulated_signal->generate_pulsar_signal_new(inputSize, false, 0, false);
+    simulated_signal->generate_pulsar_signal_new(generated_periods);
+    // simulated_signal->generate_pulsar_signal(repeat, false, 0, false);
     signal_size = simulated_signal->signal_size;
     cout << "Signal Size: " << signal_size << endl;
     input = simulated_signal->signal_u16;
@@ -124,7 +150,7 @@ int main(int argc, char *argv[])
     cout << "Process Count: " << process_count << endl;
 
     uint16_pair *output;
-    output = (uint16_pair *)malloc( numDMs * signal_size * sizeof(uint16_pair));
+    output = (uint16_pair *)malloc(numDMs * signal_size * sizeof(uint16_pair));
     if (output == NULL)
     {
         cout << "Memory Allocation Failed" << endl;
@@ -158,25 +184,42 @@ int main(int argc, char *argv[])
     plot_init();
     if (numDMs == 1)
     {
-        uint16_pair *plot_output = output + process_count * process_len - process_len;
-        plot_abs(plot_output, block_size);
+        const unsigned long fold_bins = block_size;
+        vector<double> folded_abs(fold_bins, 0.0);
+        vector<unsigned long> bin_counts(fold_bins, 0);
+        for (unsigned long p = 0; p < repeat; p++)
+        {
+            unsigned long base = fold_start + p * block_size;
+
+            for (unsigned long i = 0; i < block_size; i++)
+            {
+                const uint16_pair &sample = output[base + i];
+                const unsigned long bin = i * fold_bins / block_size;
+
+                float real = static_cast<float>(sample.first) - 32768.0f * (sample.first != 0);
+                float imag = static_cast<float>(sample.second) - 32768.0f * (sample.second != 0);
+
+                folded_abs[bin] += sqrt(
+                    static_cast<double>(real) * real +
+                    static_cast<double>(imag) * imag);
+                bin_counts[bin]++;
+            }
+        }
+        for (unsigned long i = 0; i < fold_bins; i++)
+            folded_abs[i] /= static_cast<double>(bin_counts[i]);
+
+        plot(folded_abs);
         show();
-        ofstream abs_output("check_msosm_abs.txt");
-        for (unsigned long i = 0; i < block_size; i++)
-        {
-            float real = (plot_output[i].first == 0) ? 0.0f : static_cast<float>(plot_output[i].first) - 32768.0f;
-            float imag = (plot_output[i].second == 0) ? 0.0f : static_cast<float>(plot_output[i].second) - 32768.0f;
-            abs_output << sqrt(real * real + imag * imag) << '\n';
-        }
+
+        // Save folded profile
+        string filename = "check_msosm_folded_abs_" + to_string(MIN_SEGMENT_POINTS) + "_DM" + dm_filename_value + ".txt";
+
+        ofstream abs_output(filename);
+
+        for (unsigned long i = 0; i < fold_bins; i++)
+            abs_output << folded_abs[i] << '\n';
+
         abs_output.close();
-        ofstream test_output("test.txt");
-        for (unsigned long i = 0; i < block_size; i++)
-        {
-            float real = simulated_signal->signal[i][0];
-            float imag = simulated_signal->signal[i][1];
-            test_output << sqrt(real * real + imag * imag) << '\n';
-        }
-        test_output.close();
     }
     else
     {

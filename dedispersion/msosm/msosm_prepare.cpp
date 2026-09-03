@@ -22,7 +22,7 @@ Prepare_MSOSM::Prepare_MSOSM(float bw, float dm, float f0) : bw(bw), f0(f0)
     delaycount_values = new int[numDMs];
 }
 
-Prepare_MSOSM::Prepare_MSOSM(float bw, float *dm, float f0, int numDMs) : bw(bw), dm_values(dm),f0(f0), numDMs(numDMs)
+Prepare_MSOSM::Prepare_MSOSM(float bw, float *dm, float f0, int numDMs) : bw(bw), dm_values(dm), f0(f0), numDMs(numDMs)
 {
     fs = bw;
     kdm = 4.15 * 1e15;
@@ -57,7 +57,7 @@ void Prepare_MSOSM::calculate_min_order()
     for (int i = 0; i < numDMs; i++)
     {
         double order;
-        order = sqrt(MIN_SEGMENT_POINTS/2.0) * sqrt(Nd_values[i]);
+        order = sqrt(MIN_SEGMENT_POINTS / 2.0) * sqrt(Nd_values[i]);
         M_values[i] = static_cast<int>(pow(2, ceil(log2(order))));
         if (verbose)
         {
@@ -71,6 +71,37 @@ void Prepare_MSOSM::calculate_min_order()
 void Prepare_MSOSM::override_order(int order)
 {
     M = order;
+}
+
+static void apply_tukey_window(fftwf_complex *data, int N, double alpha)
+{
+    const double pi = 3.14159265358979323846;
+
+    if (alpha <= 0.0)
+        return;
+
+    if (alpha > 1.0)
+        alpha = 1.0;
+
+    for (int i = 0; i < N; i++)
+    {
+        const double x = static_cast<double>(i) / static_cast<double>(N - 1);
+        double win = 1.0;
+
+        if (x < alpha / 2.0)
+        {
+            win = 0.5 * (1.0 + std::cos(
+                                   pi * (2.0 * x / alpha - 1.0)));
+        }
+        else if (x > 1.0 - alpha / 2.0)
+        {
+            win = 0.5 * (1.0 + std::cos(
+                                   pi * (2.0 * x / alpha - 2.0 / alpha + 1.0)));
+        }
+
+        data[i][0] *= static_cast<float>(win);
+        data[i][1] *= static_cast<float>(win);
+    }
 }
 
 void Prepare_MSOSM::generate_dedisp_params(int i)
@@ -117,6 +148,8 @@ void Prepare_MSOSM::generate_dedisp_params(int i)
         h[j][0] *= inv_M;
         h[j][1] *= inv_M;
     }
+
+    // apply_tukey_window(h, M, 0.5);
 
     memcpy(H, h, sizeof(fftwf_complex) * M);
     memset(H + M, 0, sizeof(fftwf_complex) * M);
