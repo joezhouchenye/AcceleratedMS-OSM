@@ -81,7 +81,7 @@ void SimulatedComplexSignal::generate_pulsar_signal_block(unsigned long dummy_re
     unsigned long repeat = dummy_repeat + valid_repeat;
     signal_size = repeat * Np;
     // Number of periods generated for each FFT computation
-    int mul_count = 32;
+    int mul_count = 128;
     unsigned long mul_repeat = static_cast<unsigned long>(ceil((double)repeat / (double)mul_count));
     unsigned long mul_signal_size = mul_repeat * mul_count * Np;
     this->signal_u16 = (uint16_pair *)malloc(sizeof(uint16_pair) * mul_signal_size);
@@ -257,6 +257,8 @@ void SimulatedComplexSignal::generate_pulsar_signal_block(unsigned long dummy_re
             this->signal_u16[r * mul_count * Np + j].first = static_cast<uint16_t>(real + 32768.0f);
             this->signal_u16[r * mul_count * Np + j].second = static_cast<uint16_t>(imag + 32768.0f);
         }
+        if (r == mul_repeat - 1)
+            cout << "Processing repeat " << r + 1 << " of " << mul_repeat << " completed." << endl;
     }
 
     fftwf_destroy_plan(p_f);
