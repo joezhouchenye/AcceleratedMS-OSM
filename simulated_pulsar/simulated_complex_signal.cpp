@@ -1,4 +1,7 @@
 #include "simulated_complex_signal.h"
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <omp.h>
 
 /**
@@ -43,6 +46,7 @@ static void generate_test_pulse(fftwf_complex *signal, unsigned long Np, mt19937
     double *profile = new double[Np];
     double max_amp = 0.0;
 
+#pragma omp parallel for reduction(max : max_amp) schedule(static)
     for (unsigned long i = 0; i < Np; i++)
     {
         const double x = static_cast<double>(i) / static_cast<double>(Np);
@@ -65,6 +69,209 @@ static void generate_test_pulse(fftwf_complex *signal, unsigned long Np, mt19937
         signal[i][1] = static_cast<float>(amplitude * normal_dist(generator));
     }
     delete[] profile;
+}
+
+void SimulatedComplexSignal::generate_pulsar_signal_block(unsigned long dummy_repeat, unsigned long valid_repeat)
+{
+    if (data_type != "uint16")
+    {
+        cout << "Warning: this function is intended for uint16 data type only." << endl;
+        return;
+    }
+    unsigned long repeat = dummy_repeat + valid_repeat;
+    signal_size = repeat * Np;
+    // Number of periods generated for each FFT computation
+    int mul_count = 32;
+    unsigned long mul_repeat = static_cast<unsigned long>(ceil((double)repeat / (double)mul_count));
+    unsigned long mul_signal_size = mul_repeat * mul_count * Np;
+    this->signal_u16 = (uint16_pair *)malloc(sizeof(uint16_pair) * mul_signal_size);
+
+    ostringstream signal_filename_stream;
+    signal_filename_stream << "simulated_" << repeat << "_" << fixed << setprecision(5) << dm << ".bin";
+    const string signal_filename = signal_filename_stream.str();
+
+    ifstream signal_input_file(signal_filename, ios::binary);
+    if (signal_input_file)
+    {
+        signal_input_file.read(reinterpret_cast<char *>(this->signal_u16), sizeof(uint16_pair) * signal_size);
+        if (!signal_input_file)
+        {
+            throw runtime_error("Failed to read " + signal_filename);
+        }
+        return;
+    }
+
+    range = static_cast<unsigned long>(ceil((double)Nd / (double)Np));
+
+    // ---------------------------------------------------------
+    // Generate a sufficiently long periodic pulse train
+    // ---------------------------------------------------------
+
+    unsigned long guard_periods = range + 2;
+    unsigned long num_periods = 2 * guard_periods + mul_count;
+    unsigned long long_period_size = num_periods * Np;
+    // FFT length >= signal length + dispersion spread
+    unsigned long fftpoint = 1;
+    while (fftpoint < long_period_size)
+        fftpoint <<= 1;
+
+    fftwf_complex *signal_long = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    fftwf_complex *signal_periods = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * (fftpoint + (repeat - mul_count) * Np));
+
+    memset(signal_periods, 0, sizeof(fftwf_complex) * (fftpoint + (repeat - mul_count) * Np));
+
+    mt19937 generator(1);
+    unsigned long offset = fftpoint - long_period_size;
+    const unsigned long dummy_periods0 = guard_periods + dummy_repeat - 1;
+    const unsigned long valid_periods = valid_repeat;
+    const unsigned long dummy_periods1 = (num_periods + repeat - mul_count) - dummy_periods0 - valid_periods;
+    const unsigned long valid_samples = valid_periods * Np;
+    unsigned long offset_valid = offset + dummy_periods0 * Np;
+    unsigned long offset_dummy1 = offset_valid + valid_periods * Np;
+    for (unsigned long p = 0; p < dummy_periods0; p++)
+    {
+        generate_test_pulse(signal_periods + offset + p * Np, Np, generator);
+    }
+    generator.seed(2);
+    ifstream reference_file("random_reference.bin", ios::binary);
+    if (reference_file)
+    {
+        reference_file.read(reinterpret_cast<char *>(signal_periods + offset_valid),
+                            sizeof(fftwf_complex) * valid_samples);
+        if (!reference_file)
+        {
+            throw runtime_error("Failed to read random_reference.bin");
+        }
+    }
+    else
+    {
+        for (unsigned long p = 0; p < valid_periods; p++)
+        {
+            generate_test_pulse(signal_periods + offset_valid + p * Np, Np, generator);
+        }
+
+        ofstream output_file("random_reference.bin", ios::binary);
+        output_file.write(reinterpret_cast<const char *>(signal_periods + offset_valid),
+                          sizeof(fftwf_complex) * valid_samples);
+        if (!output_file)
+        {
+            throw runtime_error("Failed to write random_reference.bin");
+        }
+    }
+    for (unsigned long p = 0; p < dummy_periods1; p++)
+    {
+        generate_test_pulse(signal_periods + offset_dummy1 + p * Np, Np, generator);
+    }
+
+    // ---------------------------------------------------------
+    // Construct theoretical dispersion transfer function
+    // directly at fftpoint frequency bins
+    // ---------------------------------------------------------
+
+    fftwf_complex *H = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+
+    const double pi_d = 3.14159265358979323846;
+    const double kdm_d = 4.15e15;
+    const double fs_d = static_cast<double>(fs);
+    const double dm_d = static_cast<double>(dm);
+    const double f0_d = static_cast<double>(f0);
+    const double w0_d = 2.0 * pi_d * f0_d;
+
+    const double freq_step = fs_d / static_cast<double>(fftpoint);
+
+#pragma omp parallel for schedule(static)
+    for (unsigned long k = 0; k < fftpoint; k++)
+    {
+        double f_disp;
+
+        if (k < fftpoint / 2)
+            f_disp = fs_d / 2.0 + static_cast<double>(k) * freq_step;
+        else
+            f_disp = static_cast<double>(k) * freq_step - fs_d / 2.0;
+
+        const double w = 2.0 * pi_d * f_disp;
+
+        const double phase =
+            4.0 * pi_d * pi_d *
+            kdm_d * dm_d *
+            w * w /
+            ((w + w0_d) * w0_d * w0_d);
+
+        H[k][0] = static_cast<float>(std::cos(phase));
+        H[k][1] = static_cast<float>(std::sin(phase));
+    }
+
+    // ---------------------------------------------------------
+    // Add dispersion:
+    // FFT(signal) -> multiply H -> IFFT
+    // ---------------------------------------------------------
+
+    fftwf_complex *dummy_buf1 = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    fftwf_complex *dummy_buf2 = (fftwf_complex *)fftwf_malloc(sizeof(fftwf_complex) * fftpoint);
+    fftwf_plan p_f = fftwf_plan_dft_1d(fftpoint, dummy_buf1, dummy_buf2, FFTW_FORWARD, FFTW_ESTIMATE);
+    fftwf_plan p_b = fftwf_plan_dft_1d(fftpoint, signal_long, signal_long, FFTW_BACKWARD, FFTW_ESTIMATE);
+    fftwf_free(dummy_buf1);
+    fftwf_free(dummy_buf2);
+
+    for (unsigned long r = 0; r < mul_repeat; r++)
+    {
+        // Print progress
+        cout << "Processing repeat " << r + 1 << " of " << mul_repeat << "\r" << flush;
+        fftwf_execute_dft(p_f, signal_periods + r * mul_count * Np, signal_long);
+
+#pragma omp parallel for schedule(static)
+        for (unsigned long k = 0; k < fftpoint; k++)
+        {
+            float real = signal_long[k][0] * H[k][0] - signal_long[k][1] * H[k][1];
+            float imag = signal_long[k][0] * H[k][1] + signal_long[k][1] * H[k][0];
+            signal_long[k][0] = real;
+            signal_long[k][1] = imag;
+        }
+
+        fftwf_execute(p_b);
+
+        // FFTW backward transform is unnormalized
+        const float inv_fftpoint = 1.0f / static_cast<float>(fftpoint);
+
+#pragma omp parallel for schedule(static)
+        for (unsigned long i = 0; i < fftpoint; i++)
+        {
+            signal_long[i][0] *= inv_fftpoint;
+            signal_long[i][1] *= inv_fftpoint;
+        }
+
+        // ---------------------------------------------------------
+        // Extract central period
+        // ---------------------------------------------------------
+
+        unsigned long center_period = guard_periods;
+        unsigned long start_index = offset + center_period * Np;
+
+        signal = signal_long + start_index;
+
+#pragma omp parallel for schedule(static)
+        for (unsigned long j = 0; j < mul_count * Np; j++)
+        {
+            float real = signal[j][0];
+            float imag = signal[j][1];
+            this->signal_u16[r * mul_count * Np + j].first = static_cast<uint16_t>(real + 32768.0f);
+            this->signal_u16[r * mul_count * Np + j].second = static_cast<uint16_t>(imag + 32768.0f);
+        }
+    }
+
+    fftwf_destroy_plan(p_f);
+    fftwf_destroy_plan(p_b);
+
+    fftwf_free(H);
+    fftwf_free(signal_long);
+    fftwf_free(signal_periods);
+
+    ofstream signal_output_file(signal_filename, ios::binary);
+    signal_output_file.write(reinterpret_cast<const char *>(this->signal_u16), sizeof(uint16_pair) * signal_size);
+    if (!signal_output_file)
+    {
+        throw runtime_error("Failed to write " + signal_filename);
+    }
 }
 
 void SimulatedComplexSignal::generate_pulsar_signal_new(unsigned long repeat)

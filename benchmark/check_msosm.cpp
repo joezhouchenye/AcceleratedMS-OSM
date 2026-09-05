@@ -16,7 +16,7 @@ int main(int argc, char *argv[])
     int numDMs = 1;
     unsigned long fftpoint = 0;
     // Compare proces length with OSM
-    unsigned long osm_process_len = 2097152 * 16;
+    unsigned long osm_process_len = 268435456;
     const struct option long_options[] = {
         {"verbose", no_argument, nullptr, 'v'},
         {"batch", required_argument, nullptr, 'b'},
@@ -94,11 +94,8 @@ int main(int argc, char *argv[])
     if (repeat == 0)
         repeat = 1;
 
-    // MS-OSM gathers frequency segments from earlier FFT blocks.  Warm up by
-    // enough complete calls to make every delayed source block valid, then
-    // start folding at a pulse-period boundary.
-    const unsigned long history_blocks =
-        msosm->delaycount > 0 ? static_cast<unsigned long>(msosm->delaycount) : 1UL;
+    // The first M output samples depend on the initially zero-filled overlap
+    // buffer. Skip these samples when folding.
     const unsigned long msosm_warmup_samples = M;
 
     // Match check_osm's warm-up boundary. Its default M is twice the next
@@ -129,14 +126,14 @@ int main(int argc, char *argv[])
     cout << "Folded Periods: " << repeat << endl;
 
     simulated_signal = new SimulatedComplexSignal(bw, dm, f0, period, "uint16");
-    simulated_signal->generate_pulsar_signal_new(generated_periods);
+    simulated_signal->generate_pulsar_signal_block(generated_periods - repeat, repeat);
     // simulated_signal->generate_pulsar_signal(repeat, false, 0, false);
     signal_size = simulated_signal->signal_size;
     cout << "Signal Size: " << signal_size << endl;
     input = simulated_signal->signal_u16;
 
     // Check and plot simulated signal
-    simulated_signal->plot_abs(input, block_size);
+    // simulated_signal->plot_abs(input, block_size);
 
     cudaError_t error;
     error = cudaHostRegister(input, signal_size * sizeof(uint16_pair), cudaHostRegisterDefault);

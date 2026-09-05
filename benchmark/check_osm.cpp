@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
     unsigned long fftpoint = 0;
     float period = 0.002048;
 
-    unsigned long osm_process_len = 2097152 * 8;
+    unsigned long osm_process_len = 268435456;
     const struct option long_options[] = {
         {"verbose", no_argument, nullptr, 'v'},
         {"batch", required_argument, nullptr, 'b'},
@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
     cout << "Folded Periods: " << repeat << endl;
 
     SimulatedComplexSignal simulated_signal(bw, dm, f0, period, "uint16");
-    simulated_signal.generate_pulsar_signal_new(generated_periods);
+    simulated_signal.generate_pulsar_signal_block(generated_periods - repeat, repeat);
     // simulated_signal.generate_pulsar_signal(repeat, false, 0, false);
     unsigned long signal_size = simulated_signal.signal_size;
     uint16_pair *input = simulated_signal.signal_u16;
