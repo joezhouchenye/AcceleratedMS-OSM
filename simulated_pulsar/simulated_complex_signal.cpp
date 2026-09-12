@@ -59,7 +59,7 @@ static void generate_test_pulse(fftwf_complex *signal, unsigned long Np, mt19937
         max_amp = std::max(max_amp, value);
     }
 
-    const double scale = 20000.0 / max_amp;
+    const double scale = 10000.0 / max_amp;
     normal_distribution<double> normal_dist(0.0, 1.0);
 
     for (unsigned long i = 0; i < Np; i++)

@@ -421,6 +421,7 @@ void discardSamplesToUint16(uint16_t *dst, Complex *src, int M, int count, cudaS
     // This kernel has better performance with loop-based process than a fused single kernel.
     for (int i = 0; i < count; i += max_groups)
     {
+        grid.y = min(max_groups, count - i);
         discardSamplesToUint16_kernel<<<grid, block_size, 0, stream>>>(reinterpret_cast<uint32_t *>(dst) + i * M, src + i * 2 * M, M);
     }
     CUDA_CHECK(cudaGetLastError());
